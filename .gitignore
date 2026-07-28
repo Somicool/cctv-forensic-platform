@@ -1,0 +1,36 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# --- Model weights (auto-downloaded) ---
+*.pt
+*.pth
+*.onnx
+~/.insightface/
+
+# --- Data & generated artifacts ---
+backend/data/videos/
+backend/data/frames/
+backend/data/crops/
+backend/data/faces/
+backend/data/faiss_indexes/
+backend/data/exports/
+backend/data/*.db
+backend/data/*.bak
+*.bak
+
+# --- Node / frontend ---
+node_modules/
+dist/
+.vite/
+
+# --- Env / editor ---
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/

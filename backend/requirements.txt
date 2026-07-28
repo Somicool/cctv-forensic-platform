@@ -1,0 +1,56 @@
+# ============================================================
+# CCTV Descriptive Search - Backend dependencies
+# ============================================================
+# STEP 1 - install PyTorch FIRST with the correct CUDA build:
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+#   (RTX 3050 Laptop, 4GB VRAM -> CUDA 12.x build)
+#
+# STEP 2 - then install the rest:
+#
+#   pip install -r requirements.txt
+# ------------------------------------------------------------
+
+# --- Web / API ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pydantic>=2.6
+websockets>=12.0
+
+# --- Vision / ML ---
+ultralytics>=8.2.0        # YOLO detection + built-in ByteTrack tracking
+lap>=0.5.12               # linear assignment solver required by ByteTrack
+open-clip-torch>=2.24     # OpenCLIP ViT-B/16 (text-image search + attributes)
+faiss-cpu>=1.8.0          # vector similarity search
+insightface>=0.7.3        # face recognition (bonus)
+onnxruntime>=1.17         # runtime for insightface (swap to onnxruntime-gpu if desired)
+
+# --- License plate OCR (hybrid, swappable engines) ---
+paddleocr==2.7.3          # PRIMARY OCR engine (PP-OCRv4)
+paddlepaddle==2.6.2       # PaddleOCR backend (CPU build; keeps VRAM for torch/CLIP)
+easyocr>=1.7.1            # fallback OCR engine (used if PaddleOCR can't load)
+# NOTE: paddlepaddle 2.6.x pins protobuf==3.20.x, so tensorboard is held at 2.16.x
+#       (torchreid only needs tensorboard>=2.16) to keep the whole stack importable.
+# OPTIONAL: Gemini Vision fallback for difficult plates. Not required; if absent,
+# the pipeline runs on PaddleOCR without errors. Enable by installing this and
+# setting the GEMINI_API_KEY env var.
+# google-generativeai>=0.7.0
+
+# --- Person re-ID (OSNet) ---
+# NOTE: the PyPI 'torchreid' is old. If it fails on Python 3.12 / new torch,
+# install the maintained version from source:
+#   pip install git+https://github.com/KaiyangZhou/deep-person-reid.git
+torchreid>=0.2.5
+gdown>=5.1                # torchreid uses gdown to fetch OSNet pretrained weights
+tensorboard==2.16.2       # torchreid imports it; pinned for paddlepaddle protobuf compat
+
+# --- Utils ---
+opencv-python>=4.9
+Pillow>=10.2
+numpy<2.0                 # pinned <2 for compatibility with torchreid / older CV tooling
+scipy>=1.12
+deep-translator>=1.11     # Hindi/Gujarati -> English (reliable, unlike googletrans)
+reportlab>=4.1            # PDF forensic reports
+tqdm>=4.66

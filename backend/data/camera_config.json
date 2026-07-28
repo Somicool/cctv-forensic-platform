@@ -1,0 +1,51 @@
+[
+  {
+    "camera_id": "CAM1",
+    "name": "Ring Road Junction",
+    "location": "Ring Road / Delhi Gate, Surat",
+    "lat": 21.1959,
+    "lon": 72.8302
+  },
+  {
+    "camera_id": "CAM2",
+    "name": "Athwa Gate",
+    "location": "Athwa Gate Circle, Surat",
+    "lat": 21.1872,
+    "lon": 72.818
+  },
+  {
+    "camera_id": "CAM3",
+    "name": "Majura Gate",
+    "location": "Majura Gate Cross Road, Surat",
+    "lat": 21.1785,
+    "lon": 72.825
+  },
+  {
+    "camera_id": "CAM4",
+    "name": "Udhna Darwaja",
+    "location": "Udhna Darwaja, Surat",
+    "lat": 21.1735,
+    "lon": 72.839
+  },
+  {
+    "camera_id": "CAM5",
+    "name": "Varachha Road",
+    "location": "Varachha Main Road, Surat",
+    "lat": 21.205,
+    "lon": 72.848
+  },
+  {
+    "camera_id": "CAM6",
+    "name": "Adajan Pal",
+    "location": "Adajan Pal Road, Surat",
+    "lat": 21.193,
+    "lon": 72.792
+  },
+  {
+    "camera_id": "CAM7",
+    "name": "Piplod",
+    "location": "Piplod / VR Mall, Surat",
+    "lat": 21.145,
+    "lon": 72.772
+  }
+]
