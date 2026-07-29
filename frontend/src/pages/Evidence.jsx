@@ -5,6 +5,7 @@
 import { useMemo, useState } from 'react'
 import { useInvestigation } from '../context/investigation'
 import VideoPlayer from '../components/VideoPlayer'
+import TrackingViewer from '../components/TrackingViewer'
 import { trackDetection } from '../api'
 import { IcEvidence, IcSearch } from '../components/icons'
 
@@ -27,41 +28,31 @@ function kindsOf(r) {
 }
 
 export default function Evidence() {
-  const { matches, evidence, inEvidence, toggleEvidence } = useInvestigation()
+  const { evidence, inEvidence, toggleEvidence } = useInvestigation()
 
   const [cats, setCats] = useState(new Set())
-  const [source, setSource] = useState('all')   // 'all' | 'match' | 'bookmarked'
   const [camera, setCamera] = useState('')
   const [minConf, setMinConf] = useState(0)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [detail, setDetail] = useState(null)
 
-  // merge matches + bookmarked into one deduped set, tagged with source
-  const items = useMemo(() => {
-    const byId = new Map()
-    for (const r of matches) byId.set(r.detection_id, { ...r, _match: true })
-    for (const r of evidence) {
-      const ex = byId.get(r.detection_id)
-      if (ex) ex._bookmarked = true
-      else byId.set(r.detection_id, { ...r, _bookmarked: true })
-    }
-    return [...byId.values()]
-  }, [matches, evidence])
+  // Only items the investigator explicitly added to evidence (bookmarked with
+  // the ＋ button) - never raw search matches or every extracted frame.
+  const items = useMemo(
+    () => evidence.map((r) => ({ ...r, _bookmarked: true })), [evidence])
 
   const cameraOptions = useMemo(
     () => [...new Set(items.map((r) => r.camera_id).filter(Boolean))].sort(), [items])
 
   const filtered = useMemo(() => items.filter((r) => {
-    if (source === 'match' && !r._match) return false
-    if (source === 'bookmarked' && !r._bookmarked) return false
     if (cats.size) { const k = kindsOf(r); if (![...cats].some((c) => k.has(c))) return false }
     if (camera && r.camera_id !== camera) return false
     if ((r.confidence || 0) * 100 < minConf) return false
     if (from && r.timestamp && r.timestamp < from) return false
     if (to && r.timestamp && r.timestamp > to + ':59') return false
     return true
-  }), [items, source, cats, camera, minConf, from, to])
+  }), [items, cats, camera, minConf, from, to])
 
   const toggleCat = (id) => setCats((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n })
 
@@ -70,7 +61,7 @@ export default function Evidence() {
       <div className="fp-page-head">
         <div>
           <h1 className="fp-page-title">Evidence Gallery</h1>
-          <p className="fp-page-desc">Search matches and bookmarked evidence for the current investigation.</p>
+          <p className="fp-page-desc">Evidence you've added to the current investigation.</p>
         </div>
       </div>
 
@@ -80,13 +71,6 @@ export default function Evidence() {
           <span className="lbl">Type</span>
           {CATS.map((c) => (
             <button key={c.id} className={'eg-chip ' + (cats.has(c.id) ? 'on' : '')} onClick={() => toggleCat(c.id)}>{c.label}</button>
-          ))}
-        </div>
-        <span className="eg-sep" />
-        <div className="eg-fgroup">
-          <span className="lbl">Source</span>
-          {[['all', 'All'], ['match', 'Matches'], ['bookmarked', 'Bookmarked']].map(([id, l]) => (
-            <button key={id} className={'eg-chip ' + (source === id ? 'on' : '')} onClick={() => setSource(id)}>{l}</button>
           ))}
         </div>
         <span className="eg-sep" />
@@ -127,10 +111,6 @@ export default function Evidence() {
               <div className="ws-rc-thumb">
                 {r.crop_url ? <img src={r.crop_url} alt={r.class_label} loading="lazy" /> : <div className="empty">{r.class_label}</div>}
                 {r.score != null && <span className={'ws-score ' + scoreTier(r.score)}>{Math.round((r.score || 0) * 100)}%</span>}
-                <div className="eg-src">
-                  {r._match && <span className="eg-tag match">Match</span>}
-                  {r._bookmarked && <span className="eg-tag book">Saved</span>}
-                </div>
               </div>
               <div className="ws-rc-body">
                 <div className="ws-rc-top"><span className="lb">{r.class_label}</span><span className="cam">{r.camera_id}</span></div>
@@ -154,6 +134,7 @@ export default function Evidence() {
 function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence }) {
   const [track, setTrack] = useState(null)
   const [tracing, setTracing] = useState(false)
+  const [showTrack, setShowTrack] = useState(false)
   const a = item.attributes || {}
   const saved = inEvidence(item.detection_id)
 
@@ -192,12 +173,15 @@ function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence }) {
             {item.track_appearances > 1 && <div className="eg-meta-row"><span className="k">Track sightings</span><span className="v">{item.track_appearances}×</span></div>}
             <div className="eg-view-actions">
               <button className={'ws-btn-sm ' + (saved ? '' : 'primary')} onClick={() => toggleEvidence(item)}>{saved ? '✓ In evidence' : '＋ Add to evidence'}</button>
+              {item.track_id != null && <button className="ws-btn-sm" onClick={() => setShowTrack(true)} title="Follow this object in the video">⤳ Track object</button>}
               <button className="ws-btn-sm" onClick={trace} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
               {item.crop_url && <a className="ws-btn-sm" href={item.crop_url} download>Download crop</a>}
             </div>
           </div>
         </div>
       </div>
+      {showTrack && <TrackingViewer detection={item} onClose={() => setShowTrack(false)}
+        onAddEvidence={toggleEvidence} inEvidence={inEvidence} />}
     </div>
   )
 }

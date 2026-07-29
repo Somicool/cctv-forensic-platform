@@ -104,6 +104,13 @@ export async function trackDetection(detectionId) {
   return data
 }
 
+// Per-frame ByteTrack trajectory of a detection's track within its own clip
+// (interactive tracking viewer). Reads stored metadata only - no AI re-run.
+export async function getTrackPath(detectionId) {
+  const { data } = await api.get(`/track/${detectionId}/path`)
+  return data
+}
+
 export async function getAudit(limit = 50) {
   const { data } = await api.get(`/audit?limit=${limit}`)
   return data

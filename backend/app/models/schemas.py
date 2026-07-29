@@ -105,6 +105,39 @@ class TrackResponse(BaseModel):
     summary: Optional[TrackSummary] = None
 
 
+# ------------------- Single-camera track path (viewer) -------------------
+# Per-frame ByteTrack trajectory of ONE track within ONE recording, used by the
+# interactive tracking viewer to draw a moving box on the original video. Built
+# purely from indexed metadata (no detection/AI re-run).
+class TrackPathPoint(BaseModel):
+    detection_id: int
+    offset_seconds: float                        # seek position within the clip
+    frame_number: Optional[int] = None
+    timestamp: Optional[str] = None
+    bbox: list[float]                            # [x, y, w, h] in native pixels
+    confidence: Optional[float] = None
+
+
+class TrackPathResponse(BaseModel):
+    detection_id: int                            # the reference detection asked about
+    video_id: Optional[int] = None
+    video_url: Optional[str] = None              # /media/videos/<clip>
+    camera_id: Optional[str] = None
+    camera_name: Optional[str] = None
+    track_id: Optional[int] = None               # ByteTrack id (reused, not recomputed)
+    class_label: Optional[str] = None
+    frame_width: Optional[int] = None            # native size (for bbox overlay scaling)
+    frame_height: Optional[int] = None
+    native_fps: Optional[float] = None           # for frame-stepping
+    start_offset: Optional[float] = None         # first sighting (s into the clip)
+    end_offset: Optional[float] = None           # last sighting (s into the clip)
+    duration: Optional[float] = None             # end - start
+    max_confidence: Optional[float] = None
+    avg_confidence: Optional[float] = None
+    attributes: dict = Field(default_factory=dict)
+    points: list[TrackPathPoint]                 # per-frame boxes, time-ordered
+
+
 # ----------------------------- Ingestion ---------------------------
 class IngestRequest(BaseModel):
     video: str                                   # filename within the server's video dir

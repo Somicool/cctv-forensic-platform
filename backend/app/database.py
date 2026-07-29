@@ -316,6 +316,23 @@ def get_detections(ids) -> list[dict]:
     return [by_id[i] for i in ids if i in by_id]
 
 
+def get_track_detections(video_id, track_id) -> list[dict]:
+    """All detection rows for ONE ByteTrack track within a video, time-ordered.
+
+    Used by the single-camera tracking viewer to replay a track's per-frame
+    bounding boxes. Reads stored metadata only - no detection/tracking is re-run.
+    Scene (whole-frame) rows are excluded."""
+    if video_id is None or track_id is None:
+        return []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM detections WHERE video_id=? AND track_id=? "
+            "AND class_label != 'scene' ORDER BY frame_number",
+            (video_id, track_id),
+        ).fetchall()
+    return [_row_to_detection(r) for r in rows]
+
+
 def query_detections(camera_ids=None, start_time=None, end_time=None,
                      class_labels=None, limit=2000) -> list[dict]:
     """Metadata-only filtered query (time / camera / class)."""

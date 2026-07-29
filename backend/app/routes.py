@@ -15,7 +15,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from . import config, database, ingest_jobs
 from .models.schemas import (Camera, ExportRequest, ExportResponse, IngestRequest,
                              PlateSearchRequest, SearchResponse, TextSearchRequest,
-                             TrackResponse)
+                             TrackPathResponse, TrackResponse)
 
 router = APIRouter()
 
@@ -79,6 +79,15 @@ def search_plate_route(req: PlateSearchRequest):
 def track_route(detection_id: int):
     from .search import cross_camera
     return cross_camera.track_across_cameras(detection_id)
+
+
+@router.get("/track/{detection_id}/path", response_model=TrackPathResponse)
+def track_path_route(detection_id: int):
+    """Per-frame ByteTrack trajectory of a detection's track WITHIN its own clip,
+    for the interactive single-camera tracking viewer. Reads indexed metadata
+    only (stored boxes / timestamps / track ids) - no AI model is re-run."""
+    from .search import track_path
+    return track_path.get_track_path(detection_id)
 
 
 @router.get("/audit")

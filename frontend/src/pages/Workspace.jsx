@@ -7,6 +7,7 @@ import {
   deleteVideo, searchText, searchImage, searchPlate, trackDetection, createExport,
 } from '../api'
 import VideoPlayer from '../components/VideoPlayer'
+import TrackingViewer from '../components/TrackingViewer'
 import { IcSearch, IcUpload, IcPlus, IcClock } from '../components/icons'
 import { useInvestigation } from '../context/investigation'
 
@@ -43,9 +44,13 @@ export default function Workspace() {
   const [tracing, setTracing] = useState(false)
 
   const [showExport, setShowExport] = useState(false)
+  const [trackView, setTrackView] = useState(null)     // detection being replayed in the tracking viewer
   const [footageOpen, setFootageOpen] = useState(true)
 
   const fileRef = useRef(null)
+  const playerRef = useRef(null)
+  const pickScrollRef = useRef(false)                // true when a user View/open should scroll to the player (not the card)
+  const [pickSeq, setPickSeq] = useState(0)          // bumped on user View / open, to scroll the player into view
   const currentRef = useRef(null); currentRef.current = current
   const resultsRef = useRef(null); resultsRef.current = results
   const activeIdRef = useRef(null); activeIdRef.current = activeId
@@ -123,7 +128,7 @@ export default function Workspace() {
     return { key: v.url, videoId: v.video_id, src: v.url, offset: 0, bbox: null, frameW: null, frameH: null,
              title: v.filename, item: null, sub: [camLabel(v.camera_id), fmtDur(v.duration)].filter(Boolean).join('  ·  ') }
   }
-  function openClip(v) { setScope(v.video_id); setScopeVideo(v); setResults(null); setMeta(null); setTrack(null); setActiveId(null); setPlayTime(0); setCurrent(mediaFromVideo(v)) }
+  function openClip(v) { pickScrollRef.current = true; setScope(v.video_id); setScopeVideo(v); setResults(null); setMeta(null); setTrack(null); setActiveId(null); setPlayTime(0); setCurrent(mediaFromVideo(v)); setPickSeq((n) => n + 1) }
   // Progressive: scope the search to the clip that's still being indexed. The
   // early portions are already searchable, so investigators don't have to wait.
   function openPartial() {
@@ -139,9 +144,15 @@ export default function Workspace() {
       bbox: r.bbox, frameW: r.frame_width, frameH: r.frame_height, item: r,
       title: `${r.class_label}  ·  ${camLabel(r.camera_id)}`,
       sub: [fmtTs(r.timestamp), 'match ' + Math.round((r.score || 0) * 100) + '%', attrText(r.attributes)].filter(Boolean).join('  ·  ') })
-    setActiveId(r.detection_id); setPlayTime(r.offset_seconds || 0); setTrack(null)
+    pickScrollRef.current = true
+    setActiveId(r.detection_id); setPlayTime(r.offset_seconds || 0); setTrack(null); setPickSeq((n) => n + 1)
   }
-  useEffect(() => { if (activeId == null) return; cardRefs.current.get(activeId)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [activeId])
+  // Keep the active card visible as playback moves through results - but NOT when
+  // the user explicitly clicked View/opened a clip (that scrolls to the player).
+  useEffect(() => { if (activeId == null || pickScrollRef.current) return; cardRefs.current.get(activeId)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [activeId])
+  // Bring the player into view when the user clicks View / opens a clip, so the
+  // selected result is visible instead of updating off-screen at the top.
+  useEffect(() => { if (pickSeq === 0) return; playerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); pickScrollRef.current = false }, [pickSeq])
   const onPlayTime = useCallback((t) => {
     setPlayTime(t)
     const cur = currentRef.current; if (!cur || cur.videoId == null) return
@@ -307,7 +318,7 @@ export default function Workspace() {
 
           {/* player */}
           {cur && (
-            <section className="fp-card ws-player">
+            <section className="fp-card ws-player" ref={playerRef}>
               <VideoPlayer key={cur.key} src={cur.src} offset={cur.offset} bbox={cur.bbox} frameW={cur.frameW} frameH={cur.frameH} onTimeUpdate={onPlayTime} />
               <div className="ws-now">
                 <div style={{ minWidth: 0 }}>
@@ -319,6 +330,7 @@ export default function Workspace() {
                     <button className={'ws-btn-sm ' + (inEvidence(cur.item.detection_id) ? '' : 'primary')} onClick={() => toggleEvidence(cur.item)}>
                       {inEvidence(cur.item.detection_id) ? '✓ In evidence' : '＋ Add to evidence'}
                     </button>
+                    {cur.item.track_id != null && <button className="ws-btn-sm" onClick={() => setTrackView(cur.item)} title="Follow this object in the video">⤳ Track object</button>}
                     <button className="ws-btn-sm" onClick={traceCurrent} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
                   </div>
                 )}
@@ -390,6 +402,10 @@ export default function Workspace() {
                       </div>
                     </button>
                     <button className={'ws-rc-add ' + (inEvidence(r.detection_id) ? 'on' : '')} onClick={() => toggleEvidence(r)} title={inEvidence(r.detection_id) ? 'In evidence' : 'Add to evidence'}>{inEvidence(r.detection_id) ? '✓' : '＋'}</button>
+                    <div className="ws-rc-foot">
+                      <button className="ws-rc-act" onClick={() => pickResult(r)}>View</button>
+                      {r.track_id != null && <button className="ws-rc-act track" onClick={() => setTrackView(r)} title="Follow this object in the video">⤳ Track</button>}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -439,6 +455,9 @@ export default function Workspace() {
 
       {showExport && <ExportModal items={evidence} caseInfo={caseInfo}
         onClose={() => setShowExport(false)} onRemove={removeEvidence} />}
+
+      {trackView && <TrackingViewer detection={trackView} onClose={() => setTrackView(null)}
+        onAddEvidence={toggleEvidence} inEvidence={inEvidence} />}
     </div>
   )
 }

@@ -352,6 +352,66 @@ body {
 .ws-rc-add { position: absolute; top: 7px; left: 7px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: rgba(8,12,20,.82); color: #fff; border: 1px solid var(--fp-border); cursor: pointer; font-size: 15px; line-height: 1; }
 .ws-rc-add:hover { border-color: var(--fp-accent); color: var(--fp-accent-2); }
 .ws-rc-add.on { background: var(--fp-success); color: #04121a; border-color: var(--fp-success); }
+.ws-rc-foot { display: flex; gap: 6px; padding: 0 10px 10px; }
+.ws-rc-act { flex: 1; padding: 6px 8px; border-radius: 8px; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  background: var(--fp-surface-2); color: var(--fp-text-dim); border: 1px solid var(--fp-border); }
+.ws-rc-act:hover { border-color: var(--fp-accent); color: var(--fp-text); }
+.ws-rc-act.track { color: var(--fp-accent-2); border-color: var(--fp-border-2); }
+.ws-rc-act.track:hover { background: rgba(79,124,255,.12); border-color: var(--fp-accent); color: #fff; }
+
+/* ============================ Tracking Viewer ============================ */
+.tv-overlay { position: fixed; inset: 0; background: rgba(4,7,13,.78); backdrop-filter: blur(3px);
+  display: grid; place-items: center; z-index: 1000; padding: 22px; }
+.tv-modal { width: min(1120px, 96vw); max-height: 94vh; overflow: hidden; display: flex; flex-direction: column;
+  background: var(--fp-surface); border: 1px solid var(--fp-border-2); border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.6); }
+.tv-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--fp-border); }
+.tv-title { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; }
+.tv-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--fp-accent); box-shadow: 0 0 8px var(--fp-accent); }
+.tv-title .tv-sub { font-size: 12px; font-weight: 500; color: var(--fp-muted); text-transform: capitalize; }
+.tv-x { background: none; border: none; color: var(--fp-muted); font-size: 26px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.tv-x:hover { color: var(--fp-text); }
+.tv-body { display: grid; grid-template-columns: 1fr 280px; gap: 0; min-height: 0; overflow: auto; }
+.tv-stagewrap { padding: 16px; min-width: 0; }
+.tv-stage { position: relative; width: 100%; max-height: 62vh; margin: 0 auto; background: #000; border-radius: 10px; overflow: hidden; }
+.tv-video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
+.tv-box { position: absolute; border: 2.5px solid var(--fp-accent); border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5), 0 0 14px rgba(79,124,255,.55); pointer-events: none; transition: all .06s linear; }
+.tv-box-tag { position: absolute; top: -20px; left: -2px; font-size: 10.5px; font-weight: 700; white-space: nowrap;
+  background: var(--fp-accent); color: #04121a; padding: 1px 6px; border-radius: 4px; text-transform: capitalize; }
+.tv-msg { display: grid; place-items: center; min-height: 220px; color: var(--fp-muted); font-size: 13px; }
+.tv-msg.err { color: #ff8a94; }
+.tv-msg.abs { position: absolute; inset: 0; background: rgba(4,7,13,.5); }
+.tv-controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.tv-btn { min-width: 40px; height: 34px; padding: 0 10px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  background: var(--fp-surface-2); color: var(--fp-text); border: 1px solid var(--fp-border); }
+.tv-btn:hover { border-color: var(--fp-accent); }
+.tv-btn.play { min-width: 52px; background: var(--fp-accent); color: #04121a; border-color: var(--fp-accent); font-weight: 700; }
+.tv-chk { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--fp-muted); }
+.tv-speed { display: flex; gap: 3px; margin-left: auto; background: var(--fp-surface-2); border: 1px solid var(--fp-border); border-radius: 8px; padding: 3px; }
+.tv-speed button { padding: 3px 8px; border-radius: 6px; font-size: 11px; border: none; background: none; color: var(--fp-muted); cursor: pointer; }
+.tv-speed button.on { background: var(--fp-accent); color: #04121a; font-weight: 700; }
+.tv-timeline { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.tv-seek { flex: 1; accent-color: var(--fp-accent); cursor: pointer; }
+.tv-t { font-size: 11px; font-family: ui-monospace, monospace; color: var(--fp-muted); }
+.tv-t.start::before { content: '▏start '; } .tv-t.end::before { content: 'end '; }
+.tv-nowline { margin-top: 6px; font-size: 11.5px; font-family: ui-monospace, monospace; color: var(--fp-text-dim); }
+.tv-nowline .tv-now { color: var(--fp-accent-2); font-weight: 700; }
+.tv-nowline .tv-muted, .tv-attrs .tv-muted { color: var(--fp-muted); }
+.tv-info { border-left: 1px solid var(--fp-border); padding: 16px; overflow: auto; }
+.tv-info-h { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--fp-muted); margin: 4px 0 8px; }
+.tv-info-h:not(:first-child) { margin-top: 16px; }
+.tv-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--fp-border); }
+.tv-row-l { font-size: 12px; color: var(--fp-muted); flex-shrink: 0; }
+.tv-row-v { font-size: 12.5px; font-weight: 600; text-align: right; text-transform: capitalize; }
+.tv-row-sub { display: block; font-size: 10.5px; font-weight: 400; color: var(--fp-muted); font-family: ui-monospace, monospace; text-transform: none; }
+.tv-attrs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tv-chip { font-size: 11px; padding: 3px 9px; border-radius: 20px; background: var(--fp-surface-2); border: 1px solid var(--fp-border); text-transform: capitalize; }
+.tv-ev { width: 100%; margin-top: 16px; padding: 9px; border-radius: 9px; cursor: pointer; font-weight: 650; font-size: 12.5px;
+  background: var(--fp-accent); color: #04121a; border: 1px solid var(--fp-accent); }
+.tv-ev.on { background: var(--fp-surface-2); color: var(--fp-success); border-color: var(--fp-success); }
+.tv-note { margin-top: 12px; font-size: 10.5px; color: var(--fp-muted); line-height: 1.4; }
+@media (max-width: 780px) { .tv-body { grid-template-columns: 1fr; } .tv-info { border-left: none; border-top: 1px solid var(--fp-border); } }
 
 /* side panels: forms + lists */
 .ws-fld { display: flex; flex-direction: column; gap: 5px; margin-bottom: 11px; }
