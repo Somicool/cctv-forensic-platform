@@ -39,7 +39,8 @@ _PERSON_WORDS = {"man", "men", "woman", "women", "person", "people", "boy", "gir
                  "female", "he", "she", "worker", "officer"}
 _VEHICLE_WORDS = {"car", "truck", "van", "suv", "sedan", "hatchback", "bus",
                   "motorcycle", "motorbike", "bike", "scooter", "bicycle", "cycle",
-                  "auto", "rickshaw", "vehicle", "jeep", "pickup", "lorry", "taxi"}
+                  "auto", "rickshaw", "vehicle", "jeep", "pickup", "lorry", "taxi",
+                  "tractor", "tempo", "matador", "ace", "hcv", "lcv", "tata"}
 _MALE = {"man", "men", "boy", "guy", "male", "gentleman", "he"}
 _FEMALE = {"woman", "women", "girl", "lady", "female", "she"}
 
@@ -177,7 +178,10 @@ def evaluate(det: dict, parsed: dict) -> dict:
 
     if parsed.get("vehicle_type"):
         w = parsed["vehicle_type"]
-        if (attrs.get("vehicle_type") or "").lower() == w:
+        # satisfied by the CLIP vehicle_type attribute OR by the detection's own
+        # class label (so a detector-labelled "auto-rickshaw" passes an
+        # "auto-rickshaw" query even if the CLIP sub-type guess differs).
+        if (attrs.get("vehicle_type") or "").lower() == w or (label or "").lower() == w:
             matched.append(w)
         else:
             passed = False

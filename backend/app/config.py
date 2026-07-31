@@ -74,11 +74,102 @@ DETECT_CLASSES = {
     26: "handbag",
     28: "suitcase",
 }
+# Class ids the PRIMARY (COCO) YOLOv10 is asked to detect. Snapshotted BEFORE any
+# secondary/plugin classes are merged into DETECT_CLASSES below, so the primary
+# model is never asked for a non-COCO id.
+PRIMARY_CLASSES = set(DETECT_CLASSES)
 # Groupings the attribute extractor uses to decide which attributes apply.
 PERSON_CLASSES = {0}
 VEHICLE_CLASSES = {1, 2, 3, 5, 7}
 DETECT_CONF = 0.4
 TRACKER_CFG = "bytetrack.yaml"             # ultralytics built-in ByteTrack
+
+# --- Detection responsibility split (India-vehicle redesign) ---
+# COCO YOLOv10 is redesigned to own only PEOPLE + GENERAL OBJECTS (person, bicycle,
+# backpack, umbrella, handbag, suitcase). The COCO *motorised* vehicle classes
+# (car / motorcycle / bus / truck) are handed to the dedicated India Vehicle
+# Detector, which becomes the SOLE source of vehicle detections.
+#
+# Safety fallback: this hand-off only happens when the India detector is actually
+# loaded (weights present). If it isn't, the primary model keeps detecting these
+# COCO vehicles so vehicle detection never disappears (the tracker selects the
+# class set at runtime - see tracker.iter_track_chunks).
+PRIMARY_VEHICLE_CLASSES = {2, 3, 5, 7}                       # car, motorcycle, bus, truck
+PRIMARY_NONVEHICLE_CLASSES = set(PRIMARY_CLASSES) - PRIMARY_VEHICLE_CLASSES  # people + objects (+bicycle)
+
+# ------------------------------------------------------------------
+# India-specific SECONDARY detectors (extensible, multi-class plugin system)
+# ------------------------------------------------------------------
+# A secondary detector (a YOLO11n trained on an Indian driving dataset) runs
+# ALONGSIDE YOLOv10 and its boxes are merged into ONE unified stream via
+# class-aware NMS. Downstream (ByteTrack, CLIP, attributes, plate OCR, ReID,
+# FAISS, search, export) is untouched - it just sees more, correctly-labelled
+# boxes and never knows which detector produced them.
+#
+# Canonical India vehicle taxonomy. FIXED global ids keep the downstream label
+# sets (search / filters / attributes) stable no matter which dataset the model
+# was trained on. COCO-equivalent classes (car/bus/truck/motorcycle/bicycle) are
+# mapped onto the EXISTING COCO ids so a secondary "car" never duplicates the
+# primary "car" - only genuinely India-specific classes get new ids (100+).
+INDIA_VEHICLE_CLASSES = {          # global_id: (label, india_specific)
+    100: ("auto-rickshaw", True),  # also "three-wheeler"
+    101: ("tractor", True),
+    102: ("tempo", True),          # small goods LCV (matador / tempo)
+    103: ("mini-truck", True),     # Tata Ace / chhota hathi
+    104: ("hcv", True),            # heavy commercial vehicle (multi-axle / trailer)
+    105: ("lcv", True),            # light commercial vehicle
+    106: ("scooter", True),        # distinct from motorcycle (COCO conflates them)
+    107: ("pickup", True),         # pickup / goods carrier
+}
+INDIA_SPECIFIC_IDS = {g for g, (_l, s) in INDIA_VEHICLE_CLASSES.items() if s}
+
+# Dataset class-name (normalised: lowercase, alphanumerics only) -> global id.
+# Lets a plugin auto-build its class map from ANY dataset's class names, so the
+# detector can support as many Indian vehicle classes as the dataset provides.
+VEHICLE_NAME_ALIASES = {
+    # India-specific (new global ids)
+    "autorickshaw": 100, "auto": 100, "rickshaw": 100, "autorick": 100,
+    "tuktuk": 100, "threewheeler": 100, "3wheeler": 100,
+    "tractor": 101,
+    "tempo": 102, "tempotraveller": 102, "matador": 102,
+    "minitruck": 103, "tataace": 103, "ace": 103, "chotahathi": 103,
+    "chhotahathi": 103,
+    "hcv": 104, "heavyvehicle": 104, "heavycommercialvehicle": 104,
+    "trailer": 104, "multiaxle": 104, "trucktrailer": 104,
+    "lcv": 105, "lightcommercialvehicle": 105,
+    "scooter": 106, "moped": 106, "activa": 106,
+    "pickup": 107, "pickuptruck": 107, "goodscarrier": 107,
+    # generic -> EXISTING COCO ids (the India detector now owns these too)
+    "car": 2, "sedan": 2, "hatchback": 2, "suv": 2, "jeep": 2, "taxi": 2, "van": 2,
+    "bus": 5, "minibus": 5,
+    "truck": 7, "lorry": 7,
+    "motorcycle": 3, "motorbike": 3, "bike": 3, "twowheeler": 3,
+    "bicycle": 1, "cycle": 1,
+    "person": 0, "pedestrian": 0, "rider": 0,
+}
+
+SECONDARY_DETECTOR_SPECS = [
+    {
+        "name": "india_vehicles",
+        "weights": str(BASE_DIR.parent / "auto_rickshaw_detector" / "weights" / "india_vehicles.pt"),
+        # class_map omitted -> built AUTOMATICALLY from the model's own class names
+        # via VEHICLE_NAME_ALIASES at load time (dataset-agnostic, multi-class).
+        "conf": 0.35,
+        "imgsz": 640,
+        "enabled": True,          # no-op until the weights file is present
+    },
+    # Add another India-specific detector later with ZERO downstream changes:
+    # {"name": "special_vehicles", "weights": ".../special.pt", "conf": 0.35, "imgsz": 640, "enabled": True},
+]
+SECONDARY_NMS_IOU = 0.55          # overlap above which the more specific Indian box
+                                  # replaces a generic (COCO) box for the same object
+
+# Register the canonical India vehicle classes so the WHOLE downstream (attributes,
+# plate OCR, query parser, filters, search, export) treats them as first-class
+# searchable vehicles - with no per-stage changes.
+for _gid, (_lbl, _spec) in INDIA_VEHICLE_CLASSES.items():
+    DETECT_CLASSES[_gid] = _lbl
+    VEHICLE_CLASSES.add(_gid)
 
 
 def _pick_imgsz() -> int:
@@ -149,7 +240,16 @@ PLATE_RECOGNITION_ENABLED = True           # master on/off switch
 PLATE_VOTE_FRAMES = 6                       # frames per vehicle track aggregated for OCR
 PLATE_MIN_VOTES = 2                         # a plate seen in >=2 frames is trusted;
                                             # a single-frame read needs high confidence
-PLATE_SINGLE_CONF = 0.50                    # confidence floor for a 1-frame plate
+PLATE_SINGLE_CONF = 0.38                    # confidence floor for a 1-frame plate
+                                            # (lowered for recall on small vehicles -
+                                            # motorcycles / autos / distant buses)
+PLATE_MAX_CANDIDATES = 3                     # store up to N plate reads per vehicle track
+                                            # so a top misread never hides the correct
+                                            # plate (recall for all vehicle types)
+PLATE_FUZZY_THRESHOLD = 0.66                 # plate SEARCH similarity floor: exact
+                                            # substrings score 1.0, near-misses (OCR
+                                            # noise / partial input) still surface as
+                                            # probable results above this (~1 error / 3 chars)
 
 # --- Hybrid OCR engine selection (swappable) ---
 OCR_ENGINE = "paddle"                       # "paddle" (PP-OCRv4) | "easyocr"; auto-falls
@@ -163,6 +263,42 @@ GEMINI_API_KEY_ENV = "GEMINI_API_KEY"       # env var holding the API key
 GEMINI_MODEL = "gemini-flash-lite-latest"
 PLATE_GEMINI_CONF = 0.55                     # PaddleOCR best-conf below this -> try Gemini
                                             # (only once per vehicle track, key permitting)
+
+# ------------------------------------------------------------------
+# High-accuracy ANPR pipeline (plate-region detection -> enhance -> multi-frame
+# temporal voting). Layered ON TOP of the existing OCR (does not replace it); the
+# old plate_reader path stays intact and is used when ANPR_ENABLED is False.
+# ------------------------------------------------------------------
+ANPR_ENABLED = True                         # route plate reads through the ANPR pipeline
+ANPR_MAX_FRAMES = 8                         # OCR at most this many SHARPEST frames per track
+ANPR_BLUR_MIN = 55.0                        # variance-of-Laplacian floor; blurrier frames skipped
+ANPR_SR_ENABLED = True                      # super-resolve small plate crops before OCR
+ANPR_SR_SCALE = 2                           # super-resolution upscale factor (2 or 4)
+ANPR_SR_MODEL = ""                          # optional cv2.dnn_superres model (FSRCNN/EDSR .pb);
+                                            # empty -> high-quality LANCZOS (fully offline)
+ANPR_PLATE_MIN_SIDE = 26                    # plate ROI shorter side (px) below which SR is forced
+ANPR_DENOISE = True                         # edge-preserving denoise on the plate ROI
+# Optional dedicated plate DETECTOR (YOLO). If the weights exist it localises the
+# plate inside each vehicle; otherwise ANPR falls back to the classical
+# morphological plate-region proposer (still OCRs the plate, not the whole vehicle).
+PLATE_DETECTOR_WEIGHTS = str(BASE_DIR.parent / "auto_rickshaw_detector" / "weights" / "plate_detector.pt")
+PLATE_DETECTOR_CONF = 0.25
+
+# --- Adaptive frame sampling for hard-to-read plates (two-wheelers / autos) ---
+# Root-cause fix from the ANPR diagnostic: bike/auto plates are tiny/blurred in the
+# sparse 2 FPS samples. For these tracks we re-open the source video and re-sample
+# DENSELY within the track's active window, score every candidate frame, and OCR
+# only the sharpest/largest plate crops. Normal detection sampling is unchanged.
+ANPR_ADAPTIVE_ENABLED = True
+ANPR_TWOWHEELER_CLASSES = {3, 100, 106}     # motorcycle, auto-rickshaw, scooter (three-wheeler=100)
+ANPR_ADAPTIVE_FPS = 8                        # dense re-sampling FPS inside a track window
+ANPR_ADAPTIVE_MAX_FRAMES = 30                # cap candidate frames read per track (cost guard)
+ANPR_ADAPTIVE_TOPK = 6                       # sharpest/largest candidates actually OCR'd
+ANPR_SCORE_W_BLUR = 0.50                     # frame-quality score weights
+ANPR_SCORE_W_SIZE = 0.35
+ANPR_SCORE_W_CONF = 0.15
+PLATE_CROP_DIR = DATA_DIR / "plate_crops"    # saved best plate crops (evidence)
+PLATE_CROP_DIR.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------------
 # Processing modes: Fast (default, quick indexing/demos) vs Accurate
@@ -199,7 +335,7 @@ MODE_PRESETS = {
         "voting": True,                      # temporal OCR + gender voting
         "do_faces": True, "do_plates": True,
         "face_min_w": 40, "face_min_h": 80, "face_min_det": FACE_DET_MIN,
-        "plate_min_w": 60, "plate_min_h": 40, "plate_blur_min": 0.0,
+        "plate_min_w": 44, "plate_min_h": 28, "plate_blur_min": 0.0,  # attempt small vehicles too
         "incremental": False, "index_chunk": 0,
     },
 }
@@ -229,7 +365,8 @@ COLORS = ["red", "blue", "white", "black", "silver", "grey",
 # beats CLIP's probability) instead of the old unconditional HSV priority.
 HSV_COLOR_WEIGHT = 1.0
 VEHICLE_TYPES = ["sedan", "hatchback", "SUV", "pickup truck", "van",
-                 "auto-rickshaw", "bus", "truck", "motorcycle", "bicycle"]
+                 "auto-rickshaw", "bus", "truck", "motorcycle", "bicycle",
+                 "tractor", "tempo", "mini truck", "scooter", "pickup"]
 ACCESSORIES = ["cap", "helmet", "backpack", "handbag", "sunglasses", "face mask"]
 
 # ------------------------------------------------------------------

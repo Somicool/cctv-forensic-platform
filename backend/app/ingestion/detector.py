@@ -44,7 +44,7 @@ def detect(image, conf: float | None = None, classes=None) -> list[Detection]:
     filtered to the wanted classes."""
     model = get_model()
     conf = config.DETECT_CONF if conf is None else conf
-    wanted = set(classes) if classes is not None else set(config.DETECT_CLASSES)
+    wanted = set(classes) if classes is not None else set(config.PRIMARY_CLASSES)
 
     results = model.predict(image, conf=conf, device=config.DEVICE,
                             imgsz=config.YOLO_IMGSZ, verbose=False)

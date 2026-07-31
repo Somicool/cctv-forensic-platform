@@ -19,6 +19,8 @@ backend/data/crops/
 backend/data/faces/
 backend/data/faiss_indexes/
 backend/data/exports/
+backend/data/plate_crops/
+backend/data/_diag_anpr/
 backend/data/*.db
 backend/data/*.bak
 *.bak

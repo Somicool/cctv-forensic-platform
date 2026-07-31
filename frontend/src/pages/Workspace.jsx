@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getLibrary, getVideos, getCameras, ingestAll, getIngestJob, stopIngest, uploadVideo,
-  deleteVideo, searchText, searchImage, searchPlate, trackDetection, createExport,
+  deleteVideo, searchText, searchPlate, trackDetection, createExport,
 } from '../api'
 import VideoPlayer from '../components/VideoPlayer'
 import TrackingViewer from '../components/TrackingViewer'
@@ -12,7 +12,7 @@ import { IcSearch, IcUpload, IcPlus, IcClock } from '../components/icons'
 import { useInvestigation } from '../context/investigation'
 
 const STEPS = ['Upload', 'Process', 'Search', 'Review', 'Export']
-const MODES = [{ id: 'text', label: 'Describe' }, { id: 'image', label: 'Image' }, { id: 'plate', label: 'Plate' }]
+const MODES = [{ id: 'text', label: 'Describe' }, { id: 'plate', label: 'Plate' }]
 const LANGS = ['EN', 'HI', 'GU']
 const EXAMPLES = ['a person carrying a backpack', 'a man in a white shirt', 'a white truck', 'a red car']
 
@@ -31,7 +31,6 @@ export default function Workspace() {
   const [query, setQuery] = useState('')
   const [language, setLanguage] = useState('EN')
   const [plate, setPlate] = useState('')
-  const [file, setFile] = useState(null)
   const [results, setResults] = useState(null)
   const [meta, setMeta] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -169,20 +168,21 @@ export default function Workspace() {
     setError(null)
     if (mode === 'text' && !query.trim()) return
     if (mode === 'plate' && !plate.trim()) return
-    if (mode === 'image' && !file) { setError('Choose an image to search with.'); return }
     setLoading(true); setTrack(null)
     const t0 = performance.now()
-    const filters = scope === 'all' ? {} : { video_id: scope }
+    // A plate is a global identifier - always search ALL footage so the vehicle
+    // is found on any camera, regardless of which clip is currently open.
+    const plateMode = mode === 'plate'
+    const filters = (plateMode || scope === 'all') ? {} : { video_id: scope }
     try {
       let data
       if (mode === 'text') data = await searchText({ query, language: language.toLowerCase(), includeScenes: false, filters })
-      else if (mode === 'image') data = await searchImage({ file })
       else data = await searchPlate({ plate, filters })
       let res = data.results || []
-      if (scope !== 'all') res = res.filter((r) => r.video_id === scope)
+      if (!plateMode && scope !== 'all') res = res.filter((r) => r.video_id === scope)
       setResults(res)
       setMatches(res)                                 // share with Evidence Gallery
-      setMeta({ total: res.length, note: data.note, objectType: data.object_type, translated: data.translated_query, elapsed: Math.round(performance.now() - t0) })
+      setMeta({ total: res.length, note: data.note, objectType: data.object_type, translated: data.translated_query, elapsed: Math.round(performance.now() - t0), mode })
       if (res.length) pickResult(res[0])
       else { setActiveId(null); if (scopeVideo) setCurrent(mediaFromVideo(scopeVideo)) }
     } catch (e) { setError(e?.response?.data?.detail || e.message || 'Search failed'); setResults([]); setMeta(null) }
@@ -353,8 +353,7 @@ export default function Workspace() {
             </div>
             <div className="ws-search-row">
               {mode === 'text' && <input className="ws-input" autoFocus value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={onKey} placeholder='Describe who or what to find — e.g. "a man in a white shirt with a backpack"' />}
-              {mode === 'image' && <input type="file" accept="image/*" className="ws-input" onChange={(e) => setFile(e.target.files?.[0] || null)} />}
-              {mode === 'plate' && <input className="ws-input" value={plate} onKeyDown={onKey} onChange={(e) => setPlate(e.target.value.toUpperCase())} placeholder='Plate — full or partial, e.g. "GJ05" or "AB1234"' />}
+              {mode === 'plate' && <input className="ws-input" autoFocus value={plate} onKeyDown={onKey} onChange={(e) => setPlate(e.target.value.toUpperCase())} placeholder='Number plate — full or partial, e.g. "GJ05CU6120" or "GJ05"' />}
               {mode === 'text' && <div className="ws-lang">{LANGS.map((l) => <button key={l} className={language === l ? 'on' : ''} onClick={() => setLanguage(l)}>{l}</button>)}</div>}
               <button className="fp-btn primary" onClick={runSearch} disabled={loading}>{loading ? 'Searching…' : 'Search'}</button>
             </div>
@@ -362,9 +361,11 @@ export default function Workspace() {
           </section>
 
           {meta && !loading && (
-            <div className="ws-meta">{meta.total} match{meta.total === 1 ? '' : 'es'}{scope !== 'all' ? ' in this clip' : ' across all footage'} · {meta.elapsed} ms
-              {meta.objectType ? <> · focused on <em>{meta.objectType}s</em></> : null}
-              {meta.translated ? <> · translated to <em>“{meta.translated}”</em></> : null}</div>
+            meta.mode === 'plate'
+              ? <div className="ws-meta">{meta.total} vehicle{meta.total === 1 ? '' : 's'} with a matching plate across all footage · {meta.elapsed} ms</div>
+              : <div className="ws-meta">{meta.total} match{meta.total === 1 ? '' : 'es'}{scope !== 'all' ? ' in this clip' : ' across all footage'} · {meta.elapsed} ms
+                  {meta.objectType ? <> · focused on <em>{meta.objectType}s</em></> : null}
+                  {meta.translated ? <> · translated to <em>“{meta.translated}”</em></> : null}</div>
           )}
           {meta?.note && !loading && <div className="ws-banner soft">{meta.note}</div>}
 
@@ -397,6 +398,7 @@ export default function Workspace() {
                       </div>
                       <div className="ws-rc-body">
                         <div className="ws-rc-top"><span className="lb">{r.class_label}</span><span className="cam">{r.camera_id}</span></div>
+                        {r.attributes?.plate_text && <div className="ws-rc-plate">{r.attributes.plate_text}</div>}
                         <div className="ws-rc-attr">{attrText(r.attributes)}</div>
                         <div className="ws-rc-ts">{fmtTs(r.timestamp).slice(11)}{r.offset_seconds != null ? '  ·  ⤿ ' + fmtDur(r.offset_seconds) : ''}</div>
                       </div>

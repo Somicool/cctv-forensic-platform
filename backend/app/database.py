@@ -140,6 +140,11 @@ def _migrate(conn) -> None:
                       ("native_fps", "REAL"), ("width", "INTEGER"), ("height", "INTEGER")):
         if col not in cols:
             conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {decl}")
+    # ANPR: supporting-frame count, reading engine, and the best PLATE crop path.
+    pcols = {r["name"] for r in conn.execute("PRAGMA table_info(plates)").fetchall()}
+    for col, decl in (("votes", "INTEGER"), ("source", "TEXT"), ("plate_crop", "TEXT")):
+        if col not in pcols:
+            conn.execute(f"ALTER TABLE plates ADD COLUMN {col} {decl}")
 
 
 def init_db() -> None:
@@ -394,10 +399,11 @@ def count_faces() -> int:
 def insert_plate(p: dict) -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO plates (detection_id, camera_id, timestamp, plate_text, confidence, crop_path) "
-            "VALUES (?,?,?,?,?,?)",
+            "INSERT INTO plates (detection_id, camera_id, timestamp, plate_text, "
+            " confidence, crop_path, votes, source, plate_crop) VALUES (?,?,?,?,?,?,?,?,?)",
             (p.get("detection_id"), p.get("camera_id"), p.get("timestamp"),
-             p.get("plate_text"), p.get("confidence"), p.get("crop_path")),
+             p.get("plate_text"), p.get("confidence"), p.get("crop_path"),
+             p.get("votes"), p.get("source"), p.get("plate_crop")),
         )
         return cur.lastrowid
 

@@ -1,0 +1,10 @@
+# Never commit datasets, raw downloads, training runs, or weights.
+data/
+raw/
+runs/
+weights/
+*.pt
+*.onnx
+*.engine
+__pycache__/
+*.cache

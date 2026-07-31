@@ -17,7 +17,8 @@ from . import vector_store, filters, result_utils
 
 # Words that make a query unambiguously about a vehicle or a person, used to bias
 # results to the right class (so "a motorcycle" never returns people).
-_VEHICLE_WORDS = {"car", "cars", "truck", "trucks", "van", "vans", "suv", "suvs",
+_VEHICLE_WORDS = {"tractor", "tempo", "matador", "ace", "hcv", "lcv", "tata",
+                  "car", "cars", "truck", "trucks", "van", "vans", "suv", "suvs",
                   "hatchback", "sedan", "bus", "buses", "motorcycle", "motorbike",
                   "motorcycles", "bike", "bikes", "bicycle", "bicycles", "cycle",
                   "scooter", "vehicle", "vehicles", "auto", "rickshaw", "lorry",

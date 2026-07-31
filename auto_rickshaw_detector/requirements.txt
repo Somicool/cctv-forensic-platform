@@ -1,0 +1,8 @@
+# Auto-rickshaw detector - standalone training pipeline.
+# ultralytics is already installed in the project's .venv (used by the main app),
+# so you can reuse that environment. These are listed for a clean standalone setup.
+ultralytics>=8.3.0        # YOLO11 / YOLOv8 training + export (YOLO11 needs >=8.3)
+roboflow>=1.1.30          # optional: turnkey dataset download from Roboflow Universe
+opencv-python
+PyYAML
+tqdm

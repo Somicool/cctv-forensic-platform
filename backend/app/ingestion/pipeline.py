@@ -251,8 +251,11 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
                     face_cands.setdefault((d.camera_id, tid), []).append(
                         (d.bbox[2] * d.bbox[3], det_ids[i], d.crop_path, d.timestamp, d.camera_id))
                 if plates_on and d.class_id in config.VEHICLE_CLASSES and d.bbox[2] >= pmw and d.bbox[3] >= pmh:
-                    plate_cands.setdefault((d.camera_id, tid), []).append(
-                        (d.bbox[2] * d.bbox[3], det_ids[i], d.crop_path, d.timestamp, d.camera_id))
+                    plate_cands.setdefault((d.camera_id, tid), []).append({
+                        "area": d.bbox[2] * d.bbox[3], "det_id": det_ids[i],
+                        "crop_path": d.crop_path, "ts": d.timestamp, "cam": d.camera_id,
+                        "frame_number": d.frame_number, "bbox": tuple(d.bbox),
+                        "confidence": d.confidence, "cls": d.class_id})
 
         # whole-frame 'scene' embeddings for this chunk (scene-level search)
         if cframes:
@@ -337,16 +340,35 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
     t = time.time()
     plate_count = 0
     if plates_on and plate_cands:
-        from . import plate_reader
+        from . import plate_reader, anpr
         for grp in plate_cands.values():
-            grp.sort(key=lambda g: g[0], reverse=True)     # largest (closest) crops first
+            grp.sort(key=lambda g: g["area"], reverse=True)   # largest (closest) crops first
             top = grp[:config.PLATE_VOTE_FRAMES]
-            _area, rep_det, rep_crop, rep_ts, rep_cam = top[0]
-            if pblur > 0 and _blur_var(rep_crop) < pblur:  # Fast: skip blurry plates
+            rep = top[0]
+            rep_det, rep_crop, rep_ts, rep_cam = rep["det_id"], rep["crop_path"], rep["ts"], rep["cam"]
+            is_tw = rep["cls"] in config.ANPR_TWOWHEELER_CLASSES
+            if not is_tw and pblur > 0 and _blur_var(rep_crop) < pblur:  # Fast: skip blurry car plates
                 continue
-            paths = [g[2] for g in top]
-            cands = (plate_reader.read_plates_voted(paths)
-                     if voting else plate_reader.read_plates(rep_crop))
+            paths = [g["crop_path"] for g in top]
+            tag = f"{video_id}_{rep_det}"
+            # ANPR. Two-wheelers / autos: ADAPTIVE high-FPS re-sampling of the source
+            # video around the track (recovers small/blurred plates); other vehicles:
+            # crop-based multi-frame voting. Falls back to crop-based if re-sampling
+            # yields nothing. Old OCR path used only when ANPR is disabled.
+            if config.ANPR_ENABLED and config.ANPR_ADAPTIVE_ENABLED and is_tw:
+                cands = anpr.read_plate_track_adaptive(
+                    str(video_path), grp, native_fps,
+                    save_dir=str(config.PLATE_CROP_DIR), tag=tag)
+                if not cands:
+                    cands = anpr.read_plate_track(paths, save_dir=str(config.PLATE_CROP_DIR), tag=tag)
+            elif config.ANPR_ENABLED:
+                cands = anpr.read_plate_track(paths, save_dir=str(config.PLATE_CROP_DIR), tag=tag)
+            else:
+                cands = (plate_reader.read_plates_voted(paths)
+                         if voting else plate_reader.read_plates(rep_crop))
+            # Store up to PLATE_MAX_CANDIDATES reads per vehicle track (not just the
+            # top one) so a confident misread can't hide the correct plate.
+            stored = 0
             for p in cands:
                 # trust a plate agreed across frames, or a confident single read
                 if p.get("votes", 1) >= config.PLATE_MIN_VOTES or p["conf"] >= config.PLATE_SINGLE_CONF:
@@ -354,9 +376,13 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
                         "detection_id": rep_det, "camera_id": rep_cam,
                         "timestamp": rep_ts, "plate_text": p["text"],
                         "confidence": p["conf"], "crop_path": rep_crop,
+                        "votes": p.get("votes"), "source": p.get("source"),
+                        "plate_crop": p.get("plate_crop"),
                     })
                     plate_count += 1
-                    break                                  # one plate per vehicle track (precision)
+                    stored += 1
+                    if stored >= config.PLATE_MAX_CANDIDATES:
+                        break
     t_plate = time.time() - t
     _emit("plates", 99, f"{plate_count} plates")
 

@@ -352,6 +352,7 @@ body {
 .ws-rc-add { position: absolute; top: 7px; left: 7px; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: rgba(8,12,20,.82); color: #fff; border: 1px solid var(--fp-border); cursor: pointer; font-size: 15px; line-height: 1; }
 .ws-rc-add:hover { border-color: var(--fp-accent); color: var(--fp-accent-2); }
 .ws-rc-add.on { background: var(--fp-success); color: #04121a; border-color: var(--fp-success); }
+.ws-rc-plate { display: inline-block; margin-top: 4px; font-family: ui-monospace, monospace; font-size: 12px; font-weight: 800; letter-spacing: .6px; color: #10151f; background: #f2c14e; border: 1px solid #c99a26; border-radius: 4px; padding: 1px 7px; }
 .ws-rc-foot { display: flex; gap: 6px; padding: 0 10px 10px; }
 .ws-rc-act { flex: 1; padding: 6px 8px; border-radius: 8px; font-size: 11.5px; font-weight: 600; cursor: pointer;
   background: var(--fp-surface-2); color: var(--fp-text-dim); border: 1px solid var(--fp-border); }

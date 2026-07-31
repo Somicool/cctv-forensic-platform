@@ -15,9 +15,65 @@ response shape already carries the camera + clip identity needed for that.
 """
 from __future__ import annotations
 
+import math
+
 from .. import database
 from ..models.schemas import TrackPathPoint, TrackPathResponse
 from .text_search import media_url, _video_index, playback_fields, _camera_names
+
+
+def _center(bbox):
+    x, y, w, h = bbox
+    return (x + w / 2.0, y + h / 2.0)
+
+
+def _contiguous_segment(points, ref_detection_id, frame_w, frame_h):
+    """Keep only the run of the track that is spatially/temporally continuous with
+    the clicked detection.
+
+    ByteTrack occasionally re-uses one track_id for more than one physical object
+    (an "ID switch"): the box then teleports across the frame mid-playback. We
+    detect those teleports (a large centroid jump, or a long time gap) and return
+    only the segment that contains the detection the user actually clicked, so the
+    box stays on that one object for its whole on-screen lifetime.
+    """
+    if len(points) <= 1:
+        return points
+
+    # typical sampling interval (median positive gap) for scaling the thresholds
+    gaps = [b.offset_seconds - a.offset_seconds
+            for a, b in zip(points, points[1:]) if b.offset_seconds > a.offset_seconds]
+    gaps.sort()
+    stride = gaps[len(gaps) // 2] if gaps else 1.0
+    stride = max(stride, 1e-3)
+    diag = math.hypot(frame_w or 1920, frame_h or 1080)
+    HARD_GAP_S = 12.0                           # gone this long -> a separate appearance
+
+    def continuous(a, b) -> bool:
+        # The ID-switch signal is a fast spatial TELEPORT, not a mere time gap:
+        # an object that is briefly occluded (or missed) should still reconnect as
+        # long as it reappears near where it was heading. So we gate on SPEED, with
+        # the allowance capped so a big jump after a long gap still splits.
+        dt = b.offset_seconds - a.offset_seconds
+        if dt > HARD_GAP_S:
+            return False
+        ca, cb = _center(a.bbox), _center(b.bbox)
+        dist = math.hypot(cb[0] - ca[0], cb[1] - ca[1])
+        steps = min(max(1.0, dt / stride), 4.0)   # cap so long gaps aren't a free teleport
+        return dist <= 0.35 * diag * steps        # ~35% of the diagonal per sampled step
+
+    # anchor on the clicked detection (fallback: middle point)
+    ref_i = next((i for i, p in enumerate(points) if p.detection_id == ref_detection_id), None)
+    if ref_i is None:
+        ref_i = len(points) // 2
+
+    lo = ref_i
+    while lo > 0 and continuous(points[lo - 1], points[lo]):
+        lo -= 1
+    hi = ref_i
+    while hi < len(points) - 1 and continuous(points[hi], points[hi + 1]):
+        hi += 1
+    return points[lo:hi + 1]
 
 
 def get_track_path(detection_id: int) -> TrackPathResponse:
@@ -37,7 +93,7 @@ def get_track_path(detection_id: int) -> TrackPathResponse:
     # fall back to just the reference detection so the viewer still works.
     rows = database.get_track_detections(video_id, track_id) or [ref]
 
-    points, confs = [], []
+    points = []
     for d in rows:
         if d.get("bbox_x") is None:                 # skip rows without a box
             continue
@@ -46,8 +102,6 @@ def get_track_path(detection_id: int) -> TrackPathResponse:
         if off is None:                             # can't place it on the timeline
             continue
         conf = d.get("confidence")
-        if conf is not None:
-            confs.append(float(conf))
         points.append(TrackPathPoint(
             detection_id=d["detection_id"],
             offset_seconds=off,
@@ -57,6 +111,13 @@ def get_track_path(detection_id: int) -> TrackPathResponse:
             confidence=float(conf) if conf is not None else None,
         ))
     points.sort(key=lambda p: p.offset_seconds)
+
+    # Trim to the segment continuous with the clicked detection so the box never
+    # jumps to a different object on a ByteTrack ID switch.
+    points = _contiguous_segment(points, detection_id,
+                                 v.get("width") if v else None,
+                                 v.get("height") if v else None)
+    confs = [p.confidence for p in points if p.confidence is not None]
 
     start_off = points[0].offset_seconds if points else None
     end_off = points[-1].offset_seconds if points else None

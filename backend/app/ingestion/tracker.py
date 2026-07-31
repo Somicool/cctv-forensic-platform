@@ -21,6 +21,7 @@ import cv2
 
 from .. import config, ingest_jobs, ingest_progress
 from .detector import get_model
+from .detectors import plugins as det_plugins
 
 
 @dataclass
@@ -152,12 +153,20 @@ def iter_track_chunks(video_path, camera_id: str, start_time=None, fps: float | 
     frame_dir.mkdir(parents=True, exist_ok=True)
     crop_dir.mkdir(parents=True, exist_ok=True)
 
+    # The India Vehicle Detector, when loaded, is the SOLE source of vehicle
+    # detections; the COCO model then only detects people + general objects
+    # (+bicycle). Without it, COCO keeps detecting vehicles as a fallback so
+    # vehicle detection never disappears.
+    use_plugins = det_plugins.active()
+    primary_classes = (config.PRIMARY_NONVEHICLE_CLASSES if use_plugins
+                       else config.PRIMARY_CLASSES)
     model = get_model()
     results = model.track(
         source=str(video_path), stream=True, tracker=config.TRACKER_CFG,
-        classes=list(config.DETECT_CLASSES), conf=config.DETECT_CONF,
+        classes=list(primary_classes), conf=config.DETECT_CONF,
         imgsz=imgsz or config.YOLO_IMGSZ, vid_stride=stride, device=config.DEVICE, verbose=False,
     )
+    sec_tracker = det_plugins.IoUTracker() if use_plugins else None
 
     buf_dets: list[TrackedDetection] = []
     buf_frames: list[dict] = []
@@ -179,25 +188,44 @@ def iter_track_chunks(video_path, camera_id: str, start_time=None, fps: float | 
             buf_frames.append({"frame_path": frame_path, "frame_number": original_frame,
                                "timestamp": ts.isoformat()})
 
+        # ONE unified detection list per frame: primary YOLOv10 boxes (tracked by
+        # ByteTrack) + any India-specific secondary boxes (class-aware NMS + a
+        # lightweight per-class IoU tracker). Downstream can't tell them apart.
+        fh, fw = frame.shape[:2]
+        raw: list[dict] = []
         if r.boxes is not None and r.boxes.id is not None:
-            fh, fw = frame.shape[:2]
             for b in r.boxes:
-                tid = int(b.id[0])
                 cls = int(b.cls[0])
-                label = config.DETECT_CLASSES.get(cls, str(cls))
-                x1, y1, x2, y2 = (float(v) for v in b.xyxy[0].tolist())
-                cx1, cy1, cx2, cy2 = _padded_box(x1, y1, x2, y2, fw, fh)
-                crop = frame[cy1:cy2, cx1:cx2]
-                if not _crop_ok(crop, (x1, y1, x2, y2), fw, fh):
-                    continue
-                cp = crop_dir / f"f{sampled:06d}_t{tid:04d}_{label}.jpg"
-                cv2.imwrite(str(cp), crop)
-                buf_dets.append(TrackedDetection(
-                    camera_id=camera_id, video_name=video_path.name, track_id=tid,
-                    frame_number=original_frame, timestamp=ts.isoformat(), class_id=cls,
-                    class_label=label, confidence=float(b.conf[0]),
-                    bbox=(x1, y1, x2 - x1, y2 - y1), crop_path=str(cp),
-                    frame_path=frame_path, crop_img=_downscale_copy(crop)))
+                raw.append({"cls_id": cls,
+                            "label": config.DETECT_CLASSES.get(cls, str(cls)),
+                            "conf": float(b.conf[0]),
+                            "xyxy": tuple(float(v) for v in b.xyxy[0].tolist()),
+                            "track_id": int(b.id[0])})
+        if use_plugins:
+            sec = det_plugins.detect_frame(frame)
+            # class-aware NMS: the more specific Indian class wins; generic
+            # duplicates are dropped. primary keeps ByteTrack ids; surviving
+            # secondary boxes get lightweight IoU-tracker ids.
+            raw, kept_sec = det_plugins.merge_detections(raw, sec)
+            for s in sec_tracker.update(kept_sec, sampled):
+                raw.append({"cls_id": s["cls_id"], "label": s["label"], "conf": s["conf"],
+                            "xyxy": s["xyxy"], "track_id": s["track_id"]})
+
+        for d in raw:
+            x1, y1, x2, y2 = d["xyxy"]
+            cx1, cy1, cx2, cy2 = _padded_box(x1, y1, x2, y2, fw, fh)
+            crop = frame[cy1:cy2, cx1:cx2]
+            if not _crop_ok(crop, (x1, y1, x2, y2), fw, fh):
+                continue
+            tid, label = d["track_id"], d["label"]
+            cp = crop_dir / f"f{sampled:06d}_t{tid:04d}_{label}.jpg"
+            cv2.imwrite(str(cp), crop)
+            buf_dets.append(TrackedDetection(
+                camera_id=camera_id, video_name=video_path.name, track_id=tid,
+                frame_number=original_frame, timestamp=ts.isoformat(), class_id=d["cls_id"],
+                class_label=label, confidence=d["conf"],
+                bbox=(x1, y1, x2 - x1, y2 - y1), crop_path=str(cp),
+                frame_path=frame_path, crop_img=_downscale_copy(crop)))
         sampled += 1
 
         if chunk_frames and sampled % chunk_frames == 0:

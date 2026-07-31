@@ -1,0 +1,27 @@
+# Training hyper-parameters for the auto-rickshaw detector.
+# Tuned for a single-class detector on an RTX 3050 6GB Laptop GPU.
+# train.py reads these defaults; any value can be overridden from the CLI.
+
+model: yolo11n.pt        # lightweight base (YOLO11n preferred; yolov8n also fine)
+epochs: 100
+imgsz: 640               # 640 is the sweet spot for nano on 6GB; 960 if you have VRAM
+batch: 16                # nano fits comfortably in 6GB at imgsz 640
+patience: 25             # early-stop if val mAP stalls for this many epochs
+device: 0                # 0 = first CUDA GPU; "cpu" to force CPU
+workers: 8
+cache: true              # cache images in RAM for faster epochs (dataset is small)
+optimizer: auto
+lr0: 0.01
+seed: 42
+
+# Augmentation - a little heavier than default to generalise from a small,
+# possibly single-region dataset to varied CCTV viewpoints.
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4
+degrees: 5.0
+translate: 0.1
+scale: 0.5
+fliplr: 0.5
+mosaic: 1.0
+mixup: 0.1
