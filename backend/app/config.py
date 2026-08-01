@@ -301,6 +301,16 @@ PLATE_CROP_DIR = DATA_DIR / "plate_crops"    # saved best plate crops (evidence)
 PLATE_CROP_DIR.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------------
+# Demo Vehicle Registry (OFFLINE, SYNTHETIC - not a real police database)
+# ------------------------------------------------------------------
+# One permanent synthetic RC-style record is generated per unique recognised
+# plate and stored in SQLite + a JSON mirror. Records are NEVER regenerated and
+# only change on manual edit. The provider is swappable so a real police-database
+# API can replace the demo later without any frontend change.
+REGISTRY_PROVIDER = "demo"                   # "demo" | (future) "police_api"
+VEHICLE_REGISTRY_JSON = DATA_DIR / "vehicle_registry.json"
+
+# ------------------------------------------------------------------
 # Processing modes: Fast (default, quick indexing/demos) vs Accurate
 # (full forensic pipeline). Every knob that differs between the two lives here,
 # so the single ingest_video() reads a preset instead of duplicating code.

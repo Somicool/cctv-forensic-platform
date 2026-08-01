@@ -8,6 +8,7 @@ import {
 } from '../api'
 import VideoPlayer from '../components/VideoPlayer'
 import TrackingViewer from '../components/TrackingViewer'
+import VehicleInfo from '../components/VehicleInfo'
 import { IcSearch, IcUpload, IcPlus, IcClock } from '../components/icons'
 import { useInvestigation } from '../context/investigation'
 
@@ -44,6 +45,7 @@ export default function Workspace() {
 
   const [showExport, setShowExport] = useState(false)
   const [trackView, setTrackView] = useState(null)     // detection being replayed in the tracking viewer
+  const [regPlate, setRegPlate] = useState(null)       // plate whose Vehicle Registry is open
   const [footageOpen, setFootageOpen] = useState(true)
 
   const fileRef = useRef(null)
@@ -331,6 +333,7 @@ export default function Workspace() {
                       {inEvidence(cur.item.detection_id) ? '✓ In evidence' : '＋ Add to evidence'}
                     </button>
                     {cur.item.track_id != null && <button className="ws-btn-sm" onClick={() => setTrackView(cur.item)} title="Follow this object in the video">⤳ Track object</button>}
+                    {cur.item.attributes?.plate_text && <button className="ws-btn-sm" onClick={() => setRegPlate(cur.item.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
                     <button className="ws-btn-sm" onClick={traceCurrent} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
                   </div>
                 )}
@@ -407,6 +410,7 @@ export default function Workspace() {
                     <div className="ws-rc-foot">
                       <button className="ws-rc-act" onClick={() => pickResult(r)}>View</button>
                       {r.track_id != null && <button className="ws-rc-act track" onClick={() => setTrackView(r)} title="Follow this object in the video">⤳ Track</button>}
+                      {r.attributes?.plate_text && <button className="ws-rc-act info" onClick={() => setRegPlate(r.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
                     </div>
                   </div>
                 ))}
@@ -460,6 +464,8 @@ export default function Workspace() {
 
       {trackView && <TrackingViewer detection={trackView} onClose={() => setTrackView(null)}
         onAddEvidence={toggleEvidence} inEvidence={inEvidence} />}
+
+      {regPlate && <VehicleInfo plate={regPlate} onClose={() => setRegPlate(null)} />}
     </div>
   )
 }

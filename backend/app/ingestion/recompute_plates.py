@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 
-from .. import config, database, ingest_jobs, ingest_progress
+from .. import config, database, ingest_jobs, ingest_progress, registry
 from . import plate_reader
 
 _VEHICLE_LABELS = [config.DETECT_CLASSES[c] for c in config.VEHICLE_CLASSES]
@@ -81,6 +81,7 @@ def recompute_plates(video_id=None, job_id=None) -> dict:
                     "votes": c.get("votes"), "source": c.get("source"),
                     "plate_crop": c.get("plate_crop"),
                 })
+                registry.ensure(text, hint=rep.get("class_label"))   # permanent demo record
                 found += 1
         elif rep:
             votes: dict = {}                        # plate_text -> {score, conf, det}
@@ -102,6 +103,7 @@ def recompute_plates(video_id=None, job_id=None) -> dict:
                     "confidence": round(v["conf"], 3), "crop_path": d["crop_path"],
                     "votes": v["n"], "source": "paddle",
                 })
+                registry.ensure(text, hint=d.get("class_label"))     # permanent demo record
                 found += 1
         if done % 10 == 0 or done == total:
             ingest_progress.set_progress(done, total)

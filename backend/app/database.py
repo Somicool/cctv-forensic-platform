@@ -110,6 +110,15 @@ CREATE TABLE IF NOT EXISTS exports (
     detection_ids TEXT
 );
 
+-- Demo Vehicle Registry (synthetic, permanent). One JSON record per unique
+-- plate; never regenerated, only edited. See app/registry.py.
+CREATE TABLE IF NOT EXISTS vehicle_registry (
+    plate         TEXT PRIMARY KEY,
+    data          TEXT,
+    created_at    TEXT,
+    updated_at    TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_det_camera ON detections(camera_id);
 CREATE INDEX IF NOT EXISTS idx_det_time   ON detections(timestamp);
 CREATE INDEX IF NOT EXISTS idx_det_class  ON detections(class_label);

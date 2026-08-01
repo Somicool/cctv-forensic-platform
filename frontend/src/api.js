@@ -116,6 +116,18 @@ export async function getAudit(limit = 50) {
   return data
 }
 
+// Demo Vehicle Registry (offline, synthetic). Keyed by number plate; the backend
+// provider is swappable (demo now, real police API later) with no UI change.
+export async function getVehicleRegistry(plate) {
+  const { data } = await api.get(`/vehicle-registry/${encodeURIComponent(plate)}`)
+  return data
+}
+
+export async function updateVehicleRegistry(plate, updates) {
+  const { data } = await api.put(`/vehicle-registry/${encodeURIComponent(plate)}`, updates)
+  return data
+}
+
 export async function createExport({ detectionIds, caseNumber, officer, notes }) {
   const { data } = await api.post('/export', {
     detection_ids: detectionIds, case_number: caseNumber, officer, notes,

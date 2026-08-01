@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .. import config, database, ingest_progress
+from .. import config, database, ingest_progress, registry
 from ..search import vector_store
 from . import tracker, embedder, attribute_extractor, reid_embedder, recording_meta, transcode
 
@@ -379,6 +379,9 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
                         "votes": p.get("votes"), "source": p.get("source"),
                         "plate_crop": p.get("plate_crop"),
                     })
+                    # Demo Vehicle Registry: one permanent synthetic record per
+                    # unique recognised plate (never regenerated). No effect on OCR.
+                    registry.ensure(p["text"], hint=config.DETECT_CLASSES.get(rep["cls"]))
                     plate_count += 1
                     stored += 1
                     if stored >= config.PLATE_MAX_CANDIDATES:

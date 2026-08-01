@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react'
 import { useInvestigation } from '../context/investigation'
 import VideoPlayer from '../components/VideoPlayer'
 import TrackingViewer from '../components/TrackingViewer'
+import VehicleInfo from '../components/VehicleInfo'
 import { trackDetection } from '../api'
 import { IcEvidence, IcSearch } from '../components/icons'
 
@@ -135,6 +136,7 @@ function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence }) {
   const [track, setTrack] = useState(null)
   const [tracing, setTracing] = useState(false)
   const [showTrack, setShowTrack] = useState(false)
+  const [showReg, setShowReg] = useState(false)
   const a = item.attributes || {}
   const saved = inEvidence(item.detection_id)
 
@@ -174,6 +176,7 @@ function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence }) {
             <div className="eg-view-actions">
               <button className={'ws-btn-sm ' + (saved ? '' : 'primary')} onClick={() => toggleEvidence(item)}>{saved ? '✓ In evidence' : '＋ Add to evidence'}</button>
               {item.track_id != null && <button className="ws-btn-sm" onClick={() => setShowTrack(true)} title="Follow this object in the video">⤳ Track object</button>}
+              {a.plate_text && <button className="ws-btn-sm" onClick={() => setShowReg(true)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
               <button className="ws-btn-sm" onClick={trace} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
               {item.crop_url && <a className="ws-btn-sm" href={item.crop_url} download>Download crop</a>}
             </div>
@@ -182,6 +185,7 @@ function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence }) {
       </div>
       {showTrack && <TrackingViewer detection={item} onClose={() => setShowTrack(false)}
         onAddEvidence={toggleEvidence} inEvidence={inEvidence} />}
+      {showReg && a.plate_text && <VehicleInfo plate={a.plate_text} onClose={() => setShowReg(false)} />}
     </div>
   )
 }

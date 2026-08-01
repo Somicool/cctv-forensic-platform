@@ -23,6 +23,7 @@ backend/data/plate_crops/
 backend/data/_diag_anpr/
 backend/data/*.db
 backend/data/*.bak
+backend/data/vehicle_registry.json
 *.bak
 
 # --- Node / frontend ---

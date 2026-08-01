@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config, database, ingest_jobs
 from .routes import router
 from .routes_library import router as library_router
+from .routes_registry import router as registry_router
 
 
 
@@ -70,6 +71,7 @@ def root():
 # REST routes (search / track / cameras / audit / ingest).
 app.include_router(router, prefix="/api")
 app.include_router(library_router, prefix="/api")
+app.include_router(registry_router, prefix="/api")
 
 
 # Serve crop/frame images the search results point to. media_url() emits
