@@ -123,6 +123,28 @@ export async function getVehicleRegistry(plate) {
   return data
 }
 
+// All permanent registry records.
+export async function listVehicleRegistry() {
+  const { data } = await api.get('/vehicle-registry')
+  return data
+}
+
+// Investigation activity history (persons + vehicles searched / found / tracked).
+export async function getActivity(limit = 300) {
+  const { data } = await api.get(`/history?limit=${limit}`)
+  return data
+}
+
+export function logActivity(entry) {
+  // fire-and-forget; never block or break the UI on a logging hiccup
+  api.post('/history', entry).catch(() => {})
+}
+
+export async function clearActivity() {
+  const { data } = await api.delete('/history')
+  return data
+}
+
 export async function updateVehicleRegistry(plate, updates) {
   const { data } = await api.put(`/vehicle-registry/${encodeURIComponent(plate)}`, updates)
   return data

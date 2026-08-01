@@ -119,6 +119,22 @@ CREATE TABLE IF NOT EXISTS vehicle_registry (
     updated_at    TEXT
 );
 
+-- Investigation activity history (persons + vehicles searched / found / tracked).
+-- Persistent dashboard history; see app/history.py.
+CREATE TABLE IF NOT EXISTS activity_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT,      -- 'person' | 'vehicle'
+    action      TEXT,      -- 'searched' | 'found' | 'tracked'
+    ref         TEXT,      -- detection id / plate / query key (for de-dup)
+    label       TEXT,
+    camera_id   TEXT,
+    timestamp   TEXT,      -- event time (detection ts or now)
+    crop_url    TEXT,
+    plate       TEXT,
+    query       TEXT,
+    created_at  TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_det_camera ON detections(camera_id);
 CREATE INDEX IF NOT EXISTS idx_det_time   ON detections(timestamp);
 CREATE INDEX IF NOT EXISTS idx_det_class  ON detections(class_label);

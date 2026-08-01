@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getLibrary, getVideos, getCameras, ingestAll, getIngestJob, stopIngest, uploadVideo,
-  deleteVideo, searchText, searchPlate, trackDetection, createExport,
+  deleteVideo, searchText, searchPlate, trackDetection, createExport, logActivity,
 } from '../api'
 import VideoPlayer from '../components/VideoPlayer'
 import TrackingViewer from '../components/TrackingViewer'
@@ -16,6 +16,16 @@ const STEPS = ['Upload', 'Process', 'Search', 'Review', 'Export']
 const MODES = [{ id: 'text', label: 'Describe' }, { id: 'plate', label: 'Plate' }]
 const LANGS = ['EN', 'HI', 'GU']
 const EXAMPLES = ['a person carrying a backpack', 'a man in a white shirt', 'a white truck', 'a red car']
+
+// Build a dashboard activity entry for a search result (person or vehicle).
+function activityFromResult(r, action) {
+  return {
+    kind: r.class_label === 'person' ? 'person' : 'vehicle',
+    action, ref: String(r.detection_id), label: r.class_label,
+    camera_id: r.camera_id, timestamp: r.timestamp, crop_url: r.crop_url,
+    plate: r.attributes?.plate_text || null,
+  }
+}
 
 export default function Workspace() {
   const { evidence, inEvidence, toggleEvidence, removeEvidence, setMatches, caseInfo, setCaseInfo } = useInvestigation()
@@ -147,7 +157,9 @@ export default function Workspace() {
       sub: [fmtTs(r.timestamp), 'match ' + Math.round((r.score || 0) * 100) + '%', attrText(r.attributes)].filter(Boolean).join('  ·  ') })
     pickScrollRef.current = true
     setActiveId(r.detection_id); setPlayTime(r.offset_seconds || 0); setTrack(null); setPickSeq((n) => n + 1)
+    logActivity(activityFromResult(r, 'found'))         // dashboard history: found
   }
+  function trackObject(r) { logActivity(activityFromResult(r, 'tracked')); setTrackView(r) }
   // Keep the active card visible as playback moves through results - but NOT when
   // the user explicitly clicked View/opened a clip (that scrolls to the player).
   useEffect(() => { if (activeId == null || pickScrollRef.current) return; cardRefs.current.get(activeId)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [activeId])
@@ -185,6 +197,10 @@ export default function Workspace() {
       setResults(res)
       setMatches(res)                                 // share with Evidence Gallery
       setMeta({ total: res.length, note: data.note, objectType: data.object_type, translated: data.translated_query, elapsed: Math.round(performance.now() - t0), mode })
+      // dashboard history: record the search (person / vehicle / plate)
+      const term = mode === 'plate' ? plate : query
+      const skind = mode === 'plate' ? 'vehicle' : (data.object_type === 'person' ? 'person' : (data.object_type === 'vehicle' ? 'vehicle' : null))
+      if ((term || '').trim()) logActivity({ kind: skind, action: 'searched', ref: `q:${mode}:${term}`.toLowerCase(), label: term, query: term, timestamp: new Date().toISOString() })
       if (res.length) pickResult(res[0])
       else { setActiveId(null); if (scopeVideo) setCurrent(mediaFromVideo(scopeVideo)) }
     } catch (e) { setError(e?.response?.data?.detail || e.message || 'Search failed'); setResults([]); setMeta(null) }
@@ -332,7 +348,7 @@ export default function Workspace() {
                     <button className={'ws-btn-sm ' + (inEvidence(cur.item.detection_id) ? '' : 'primary')} onClick={() => toggleEvidence(cur.item)}>
                       {inEvidence(cur.item.detection_id) ? '✓ In evidence' : '＋ Add to evidence'}
                     </button>
-                    {cur.item.track_id != null && <button className="ws-btn-sm" onClick={() => setTrackView(cur.item)} title="Follow this object in the video">⤳ Track object</button>}
+                    {cur.item.track_id != null && <button className="ws-btn-sm" onClick={() => trackObject(cur.item)} title="Follow this object in the video">⤳ Track object</button>}
                     {cur.item.attributes?.plate_text && <button className="ws-btn-sm" onClick={() => setRegPlate(cur.item.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
                     <button className="ws-btn-sm" onClick={traceCurrent} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
                   </div>
@@ -394,10 +410,11 @@ export default function Workspace() {
                 {results.map((r) => (
                   <div key={r.detection_id} ref={(el) => { if (el) cardRefs.current.set(r.detection_id, el); else cardRefs.current.delete(r.detection_id) }}
                        className={'ws-rc ' + (activeId === r.detection_id ? 'active' : '')}>
-                    <button className="ws-rc-hit" onClick={() => pickResult(r)}>
+                    <button className="ws-rc-hit" onClick={() => pickResult(r)} title="Click to view in the player">
                       <div className="ws-rc-thumb">
                         {r.crop_url ? <img src={r.crop_url} alt={r.class_label} loading="lazy" /> : <div className="empty">{r.class_label}</div>}
                         <span className={'ws-score ' + scoreTier(r.score)}>{Math.round((r.score || 0) * 100)}%</span>
+                        <div className="ws-rc-play">▶ View</div>
                       </div>
                       <div className="ws-rc-body">
                         <div className="ws-rc-top"><span className="lb">{r.class_label}</span><span className="cam">{r.camera_id}</span></div>
@@ -408,8 +425,7 @@ export default function Workspace() {
                     </button>
                     <button className={'ws-rc-add ' + (inEvidence(r.detection_id) ? 'on' : '')} onClick={() => toggleEvidence(r)} title={inEvidence(r.detection_id) ? 'In evidence' : 'Add to evidence'}>{inEvidence(r.detection_id) ? '✓' : '＋'}</button>
                     <div className="ws-rc-foot">
-                      <button className="ws-rc-act" onClick={() => pickResult(r)}>View</button>
-                      {r.track_id != null && <button className="ws-rc-act track" onClick={() => setTrackView(r)} title="Follow this object in the video">⤳ Track</button>}
+                      {r.track_id != null && <button className="ws-rc-act track" onClick={() => trackObject(r)} title="Follow this object in the video">⤳ Track</button>}
                       {r.attributes?.plate_text && <button className="ws-rc-act info" onClick={() => setRegPlate(r.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
                     </div>
                   </div>
