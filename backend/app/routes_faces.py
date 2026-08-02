@@ -22,7 +22,7 @@ def face_for_detection(detection_id: int, deep: bool = True):
     if best:
         return best
     return {"available": False,
-            "reason": "No clear face found in this track.",
+            "reason": "No usable face found in this track.",
             "person_crop_url": faces_gallery.expanded_crop_url(detection_id)}
 
 
@@ -41,7 +41,9 @@ def save_face(payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail="detection_id required")
     rec = faces_gallery.save_face(int(det), payload.get("investigation"))
     if rec is None:
-        raise HTTPException(status_code=404, detail="No clear face found in this track.")
+        raise HTTPException(status_code=404, detail="No usable face found in this track.")
+    if rec.get("error"):                      # no face cleared the forensic quality bar
+        raise HTTPException(status_code=404, detail=rec["error"])
     return rec
 
 

@@ -197,7 +197,7 @@ export default function Workspace() {
       const rec = await saveFace({ detectionId: r.detection_id, investigation: inv })
       showToast(`Face saved to Face Gallery (#${rec.saved_id}).`)
     } catch (e) {
-      showToast(e?.response?.status === 404 ? 'No clear face found in this track.'
+      showToast(e?.response?.status === 404 ? 'No usable face found in this track.'
         : (e?.response?.data?.detail || e.message || 'Could not save face.'))
     }
   }

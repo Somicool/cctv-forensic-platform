@@ -67,23 +67,58 @@ def _expand_box(bbox, W, H, frac=None):
     return (x1, y1, x2, y2) if (x2 > x1 and y2 > y1) else None
 
 
-def _expanded_from_frame(det: dict):
-    """(expanded person crop ndarray, frame) for a detection, from the ORIGINAL
-    frame. Falls back to the stored tight crop when the frame isn't available."""
-    fp = _frame_path(det.get("video_id"), det.get("frame_number"))
-    if fp:
-        frame = cv2.imread(fp)
-        if frame is not None and frame.size and det.get("bbox_x") is not None:
-            H, W = frame.shape[:2]
-            box = _expand_box((det["bbox_x"], det["bbox_y"], det["bbox_w"], det["bbox_h"]), W, H)
-            if box:
-                x1, y1, x2, y2 = box
-                crop = frame[y1:y2, x1:x2]
-                if crop is not None and crop.size:
-                    return crop, frame
-    cp = det.get("crop_path")
-    img = cv2.imread(str(cp)) if cp and Path(cp).exists() else None
-    return img, None
+def source_video_path(video_id):
+    """Absolute path of the ORIGINAL source video for a video_id (or None)."""
+    if video_id is None:
+        return None
+    with database.get_conn() as conn:
+        row = conn.execute("SELECT filename FROM videos WHERE video_id=?", (video_id,)).fetchone()
+    if not row or not row["filename"]:
+        return None
+    p = config.VIDEO_DIR / row["filename"]
+    return p if p.exists() else None
+
+
+class _FrameReader:
+    """Seeks and reads FULL-RESOLUTION frames straight from the source video.
+
+    Face extraction must never reuse the tiny stored person crops (they are only
+    ~90px wide), so every candidate frame is decoded from the original video."""
+
+    def __init__(self, video_path):
+        self.cap = cv2.VideoCapture(str(video_path)) if video_path else None
+        self.ok = bool(self.cap and self.cap.isOpened())
+
+    def read(self, frame_index):
+        if not self.ok or frame_index is None:
+            return None
+        try:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+            got, frame = self.cap.read()
+            return frame if (got and frame is not None and frame.size) else None
+        except Exception:
+            return None
+
+    def close(self):
+        try:
+            if self.cap is not None:
+                self.cap.release()
+        except Exception:
+            pass
+
+
+def _expanded_from_full_frame(frame, det: dict):
+    """(expanded person crop, offset (x1,y1)) taken from a FULL-RES video frame.
+    The offset lets us map a face box back to original-frame coordinates."""
+    if frame is None or not frame.size or det.get("bbox_x") is None:
+        return None, (0, 0)
+    H, W = frame.shape[:2]
+    box = _expand_box((det["bbox_x"], det["bbox_y"], det["bbox_w"], det["bbox_h"]), W, H)
+    if not box:
+        return None, (0, 0)
+    x1, y1, x2, y2 = box
+    crop = frame[y1:y2, x1:x2]
+    return (crop if (crop is not None and crop.size) else None), (x1, y1)
 
 
 def expanded_crop_url(detection_id: int) -> str | None:
@@ -92,17 +127,28 @@ def expanded_crop_url(detection_id: int) -> str | None:
     refs = database.get_detections([detection_id])
     if not refs:
         return None
+    det = refs[0]
     out = config.EXPANDED_CROP_DIR / f"exp_{detection_id}.jpg"
     if out.exists():
         return media_url(str(out))
-    crop, _f = _expanded_from_frame(refs[0])
+    # decode the ORIGINAL frame from the source video (stored crops are tiny)
+    crop = None
+    vpath = source_video_path(det.get("video_id"))
+    if vpath:
+        reader = _FrameReader(vpath)
+        try:
+            frame = reader.read(det.get("frame_number"))
+            if frame is not None:
+                crop, _off = _expanded_from_full_frame(frame, det)
+        finally:
+            reader.close()
     if crop is None or not crop.size:
-        return media_url(refs[0].get("crop_path"))
+        return media_url(det.get("crop_path"))
     try:
-        cv2.imwrite(str(out), crop)
+        cv2.imwrite(str(out), crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
         return media_url(str(out))
     except Exception:
-        return media_url(refs[0].get("crop_path"))
+        return media_url(det.get("crop_path"))
 
 
 # ------------------------------------------------- face quality scoring
@@ -265,47 +311,126 @@ def _scan_order(dets: list[dict], max_frames: int) -> list[dict]:
 
 
 def rank_faces_in_track(video_id, track_id, max_frames=None) -> dict:
-    """Inspect the WHOLE person track, score every detected face on the 9 quality
-    factors and RANK them. Returns:
-        {"best": <highest-quality face or None>, "ranked": [...metrics...],
-         "frames_seen": n, "faces_seen": n}
-    The running best is replaced whenever a later frame yields a better face, so
-    the winner is the best representative face of the entire track - never the
-    first one detected."""
-    empty = {"best": None, "ranked": [], "frames_seen": 0, "faces_seen": 0}
+    """Forensic best-face pipeline over a whole ByteTrack person track.
+
+    For EVERY candidate frame of the track it reloads the ORIGINAL full-resolution
+    frame from the source video, expands the original person bbox by ~20%, runs
+    face detection on that fresh crop, and scores the face on 9 factors. Stored
+    person crops are never reused. The running best is replaced whenever a better
+    face appears later, so the winner represents the entire track.
+
+    Returns {"best", "ranked", "frames_seen", "faces_seen", "reason",
+             "video_path", "diagnostics"}. `best` is None when no face in the whole
+    track clears the forensic acceptance bar."""
+    out = {"best": None, "ranked": [], "frames_seen": 0, "faces_seen": 0,
+           "reason": None, "video_path": None, "diagnostics": []}
     if video_id is None or track_id is None:
-        return empty
+        out["reason"] = "missing video/track id"
+        return out
     max_frames = max_frames or config.FACE_TRACK_SCAN_FRAMES
+
     with database.get_conn() as conn:
         dets = [dict(r) for r in conn.execute(
             "SELECT * FROM detections WHERE video_id=? AND track_id=? AND class_label!='scene'",
             (video_id, track_id)).fetchall()]
     if not dets:
-        return empty
+        out["reason"] = "no detections for this track"
+        return out
 
+    vpath = source_video_path(video_id)
+    if vpath is None:
+        out["reason"] = "source video not available"
+        return out
+    out["video_path"] = str(vpath)
+
+    reader = _FrameReader(vpath)
+    if not reader.ok:
+        reader.close()
+        out["reason"] = "could not open source video"
+        return out
+
+    # candidates ordered by frame so seeking moves mostly forward
+    cands = sorted(_scan_order(dets, max_frames), key=lambda d: (d.get("frame_number") or 0))
     best, ranked, frames_seen, faces_seen = None, [], 0, 0
-    for d in _scan_order(dets, max_frames):
-        crop, _frame = _expanded_from_frame(d)
-        if crop is None or not crop.size:
-            continue
-        frames_seen += 1
-        for f in _detect_faces_kps(crop):
-            if float(f.det_score) < config.FACE_MIN_DET_SCORE:
+    try:
+        for d in cands:
+            frame = reader.read(d.get("frame_number"))          # FULL-RES original frame
+            if frame is None:
                 continue
-            faces_seen += 1
-            m = _face_quality(f, crop)
-            ranked.append({**{k: v for k, v in m.items() if k != "bbox"},
-                           "detection_id": d["detection_id"],
-                           "frame_number": d.get("frame_number")})
-            # progressive replacement: a better face later in the track wins
-            if best is None or m["quality"] > best["quality"]:
-                best = {**m, "detection_id": d["detection_id"], "camera_id": d.get("camera_id"),
-                        "timestamp": d.get("timestamp"), "frame_number": d.get("frame_number"),
-                        "crop": crop, "insight": f}
+            crop, (ox, oy) = _expanded_from_full_frame(frame, d)
+            if crop is None or not crop.size:
+                continue
+            frames_seen += 1
+            for f in _detect_faces_kps(crop):
+                if float(f.det_score) < config.FACE_MIN_DET_SCORE:
+                    continue
+                faces_seen += 1
+                m = _face_quality(f, crop)
+                ranked.append({**{k: v for k, v in m.items() if k != "bbox"},
+                               "detection_id": d["detection_id"],
+                               "frame_number": d.get("frame_number")})
+                if config.FACE_DIAG_LOG:
+                    out["diagnostics"].append(
+                        f"frame {d.get('frame_number')}: q={m['quality']:.3f} "
+                        f"conf={m['det_score']:.2f} sharp={m['sharpness']:.2f} "
+                        f"size={m['face_size']}px res={m['resolution']}px2 "
+                        f"frontal={m['frontal']:.2f} eyes={m['eyes']:.2f}")
+                # progressive replacement: a better face later in the track wins
+                if best is None or m["quality"] > best["quality"]:
+                    fx1, fy1, fx2, fy2 = m["bbox"]
+                    best = {**m, "detection_id": d["detection_id"],
+                            "camera_id": d.get("camera_id"), "timestamp": d.get("timestamp"),
+                            "frame_number": d.get("frame_number"),
+                            # face box in ORIGINAL-FRAME coordinates (for full-res re-crop)
+                            "frame_bbox": [fx1 + ox, fy1 + oy, fx2 + ox, fy2 + oy],
+                            "insight": f}
+    finally:
+        reader.close()
+
     ranked.sort(key=lambda x: x["quality"], reverse=True)
-    if best is not None:
-        best["low_quality"] = bool(best["quality"] < config.FACE_LOW_QUALITY_THRESHOLD)
-    return {"best": best, "ranked": ranked, "frames_seen": frames_seen, "faces_seen": faces_seen}
+    out.update(ranked=ranked, frames_seen=frames_seen, faces_seen=faces_seen)
+
+    # forensic acceptance: never fall back to a poor crop
+    if best is None:
+        out["reason"] = ("No usable face found in this track."
+                         if frames_seen else "no frames could be decoded")
+        return out
+    if best["quality"] < config.FACE_ACCEPT_QUALITY or best["face_size"] < config.FACE_ACCEPT_MIN_PX:
+        out["reason"] = (f"No usable face found in this track. "
+                         f"(best q={best['quality']:.2f} < {config.FACE_ACCEPT_QUALITY}, "
+                         f"size={best['face_size']}px)")
+        out["rejected_best"] = {k: best[k] for k in ("quality", "face_size", "sharpness",
+                                                     "det_score", "frame_number")}
+        return out
+
+    best["low_quality"] = bool(best["quality"] < config.FACE_LOW_QUALITY_THRESHOLD)
+    best["reason"] = (f"highest quality of {faces_seen} face(s) across {frames_seen} "
+                      f"full-resolution frames of track {track_id}")
+    out["best"] = best
+    return out
+
+
+def _recrop_face_full_res(video_id, frame_number, frame_bbox, pad_x=0.30, pad_y=0.40):
+    """Re-crop the winning face DIRECTLY from the original frame at full resolution
+    (not from the working crop), so the saved image keeps maximum detail."""
+    vpath = source_video_path(video_id)
+    if vpath is None or frame_bbox is None:
+        return None
+    reader = _FrameReader(vpath)
+    try:
+        frame = reader.read(frame_number)
+        if frame is None:
+            return None
+        H, W = frame.shape[:2]
+        x1, y1, x2, y2 = (float(v) for v in frame_bbox)
+        fw, fh = max(1.0, x2 - x1), max(1.0, y2 - y1)
+        cx1 = max(0, int(x1 - fw * pad_x)); cy1 = max(0, int(y1 - fh * pad_y))
+        cx2 = min(W, int(x2 + fw * pad_x)); cy2 = min(H, int(y2 + fh * pad_y))
+        if cx2 <= cx1 or cy2 <= cy1:
+            return None
+        return frame[cy1:cy2, cx1:cx2].copy()
+    finally:
+        reader.close()
 
 
 def best_face_in_track(video_id, track_id, ref_frame=None, max_frames=None) -> dict | None:
@@ -314,35 +439,50 @@ def best_face_in_track(video_id, track_id, ref_frame=None, max_frames=None) -> d
 
 
 # ------------------------------------------------- artifacts + per-track cache
-def _write_face_artifacts(found: dict, tag: str) -> dict:
-    """Write the three face images for a winning face:
-      face  - tight best-face crop (Face Gallery image)
-      prev  - normalised 256px square preview
-      prof  - expanded person crop (person profile image)
+def _write_face_artifacts(video_id, found: dict, tag: str) -> dict:
+    """Write the three images for a winning face, all re-cropped from the ORIGINAL
+    full-resolution frame (never from a stored crop):
+      face    - tight best-face crop        (Face Gallery image)
+      preview - normalised 256px square     (Preview image)
+      profile - expanded person crop        (Person profile image)
     Returns absolute paths (any may be None on failure)."""
-    out = {"face": None, "preview": None, "profile": None}
+    out = {"face": None, "preview": None, "profile": None, "face_px": None}
+    vpath = source_video_path(video_id)
+    reader = _FrameReader(vpath) if vpath else None
     try:
-        x1, y1, x2, y2 = (int(v) for v in found["bbox"])
-        H, W = found["crop"].shape[:2]
-        px, py = int((x2 - x1) * 0.25), int((y2 - y1) * 0.35)
-        reg = found["crop"][max(0, y1 - py):min(H, y2 + py), max(0, x1 - px):min(W, x2 + px)]
+        frame = reader.read(found.get("frame_number")) if (reader and reader.ok) else None
+        if frame is None:
+            return out
+        H, W = frame.shape[:2]
+        # 1) tight face crop at FULL resolution
+        x1, y1, x2, y2 = (float(v) for v in found["frame_bbox"])
+        fw, fh = max(1.0, x2 - x1), max(1.0, y2 - y1)
+        cx1, cy1 = max(0, int(x1 - fw * 0.30)), max(0, int(y1 - fh * 0.40))
+        cx2, cy2 = min(W, int(x2 + fw * 0.30)), min(H, int(y2 + fh * 0.40))
+        reg = frame[cy1:cy2, cx1:cx2] if (cx2 > cx1 and cy2 > cy1) else None
         if reg is not None and reg.size:
             fp = config.SAVED_FACE_DIR / f"face_{tag}.jpg"
-            cv2.imwrite(str(fp), reg)
+            cv2.imwrite(str(fp), reg, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
             out["face"] = str(fp)
-            side = 256
-            prev = cv2.resize(reg, (side, side), interpolation=cv2.INTER_CUBIC)
+            out["face_px"] = f"{reg.shape[1]}x{reg.shape[0]}"
+            # 2) 256px square preview (upscaled with a good kernel for small faces)
+            prev = cv2.resize(reg, (256, 256), interpolation=cv2.INTER_CUBIC)
             pp = config.SAVED_FACE_DIR / f"preview_{tag}.jpg"
-            cv2.imwrite(str(pp), prev)
+            cv2.imwrite(str(pp), prev, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
             out["preview"] = str(pp)
+        # 3) person profile image: expanded person box from the same original frame
+        pdet = (database.get_detections([found["detection_id"]]) or [None])[0]
+        if pdet is not None:
+            pcrop, _off = _expanded_from_full_frame(frame, pdet)
+            if pcrop is not None and pcrop.size:
+                prof = config.SAVED_FACE_DIR / f"profile_{tag}.jpg"
+                cv2.imwrite(str(prof), pcrop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                out["profile"] = str(prof)
     except Exception:
         pass
-    try:                                                    # person profile image
-        prof = config.SAVED_FACE_DIR / f"profile_{tag}.jpg"
-        cv2.imwrite(str(prof), found["crop"])
-        out["profile"] = str(prof)
-    except Exception:
-        pass
+    finally:
+        if reader is not None:
+            reader.close()
     return out
 
 
@@ -369,6 +509,29 @@ def _cache_put(video_id, track_id, found, arts, scan) -> None:
              1 if found.get("low_quality") else 0, arts.get("face"), arts.get("preview"),
              arts.get("profile"), json.dumps(metrics), scan.get("frames_seen"),
              scan.get("faces_seen"), database._now()))
+
+
+def _log_selection(video_id, track_id, found, arts, scan) -> None:
+    """Diagnostic log for every saved/selected face: which frame won and why."""
+    if not config.FACE_DIAG_LOG:
+        return
+    try:
+        print(f"[face] track {track_id} (video {video_id}) -> SELECTED frame "
+              f"{found.get('frame_number')}")
+        print(f"[face]   quality={found['quality']:.3f} blur/sharpness={found['sharpness']:.3f} "
+              f"confidence={found['det_score']:.3f} face={found['face_size']}px "
+              f"res={found['resolution']}px2 frontal={found['frontal']:.2f} "
+              f"eyes={found['eyes']:.2f} brightness={found['brightness']:.2f} "
+              f"occlusion={found['occlusion']:.2f} noise={found['noise']:.2f}")
+        print(f"[face]   reason: {found.get('reason')}")
+        print(f"[face]   scanned {scan.get('frames_seen')} full-res frames, "
+              f"ranked {scan.get('faces_seen')} faces; saved face image "
+              f"{arts.get('face_px')} from source video")
+        runner = (scan.get("ranked") or [{}])[1] if len(scan.get("ranked") or []) > 1 else None
+        if runner:
+            print(f"[face]   runner-up: frame {runner.get('frame_number')} q={runner.get('quality')}")
+    except Exception:
+        pass
 
 
 def _preview_from_cache(cached: dict, detection_id: int) -> dict:
@@ -442,15 +605,20 @@ def best_face_for_detection(detection_id: int, deep: bool = True) -> dict | None
                     "quality": round(min(1.0, _sharpness(best.get("crop_path")) / 300.0), 3)}
         return None
 
-    # write the face / preview / profile images and cache the winner for this track
-    arts = _write_face_artifacts(found, f"t{vid}_{tid}")
+    # write the face / preview / profile images (all re-cropped from the ORIGINAL
+    # full-res frame) and cache the winner for this track
+    arts = _write_face_artifacts(vid, found, f"t{vid}_{tid}")
     try:
         _cache_put(vid, tid, found, arts, scan)
     except Exception:
         pass
+    _log_selection(vid, tid, found, arts, scan)
 
     f = found["insight"]
     return {"available": True, "source": "track-best",
+            "selected_frame": found.get("frame_number"),
+            "selection_reason": found.get("reason"),
+            "face_image_px": arts.get("face_px"),
             "face_id": None, "detection_id": found["detection_id"],
             "camera_id": found.get("camera_id"), "timestamp": found.get("timestamp"),
             "gender": None, "age": int(f.age) if getattr(f, "age", None) is not None else None,
@@ -549,11 +717,12 @@ def save_face(detection_id: int, investigation: str | None = None) -> dict | Non
         src_det = found["detection_id"]
         # embedding straight from the winning face (no re-detection elsewhere)
         emb_b64 = _encode_emb(np.asarray(f.normed_embedding, dtype="float32"))
-        arts = _write_face_artifacts(found, f"t{vid}_{tid}")
+        arts = _write_face_artifacts(vid, found, f"t{vid}_{tid}")
         try:
             _cache_put(vid, tid, found, arts, scan)
         except Exception:
             pass
+        _log_selection(vid, tid, found, arts, scan)
         expanded_crop_url(src_det)                       # ensure the expanded crop exists
         profile = arts.get("profile") or str(config.EXPANDED_CROP_DIR / f"exp_{src_det}.jpg")
         if not Path(profile).exists():
@@ -561,7 +730,10 @@ def save_face(detection_id: int, investigation: str | None = None) -> dict | Non
         metrics = {k: found.get(k) for k in
                    ("det_score", "face_size", "resolution", "sharpness", "frontal",
                     "eyes", "brightness", "occlusion", "noise")}
-        metrics.update(frames_seen=scan["frames_seen"], faces_seen=scan["faces_seen"])
+        metrics.update(frames_seen=scan["frames_seen"], faces_seen=scan["faces_seen"],
+                       selected_frame=found.get("frame_number"),
+                       selection_reason=found.get("reason"),
+                       face_image_px=arts.get("face_px"), source="original-video")
         with database.get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO saved_faces (face_id, detection_id, investigation, camera_id, "
@@ -576,29 +748,16 @@ def save_face(detection_id: int, investigation: str | None = None) -> dict | Non
             row = dict(conn.execute("SELECT * FROM saved_faces WHERE saved_id=?", (saved_id,)).fetchone())
         return _row_urls(row)
 
-    # nothing recovered from the frames -> fall back to a face stored at ingest
-    best = best_face_for_detection(detection_id, deep=False)
-    if not best or not best.get("face_id"):
-        return None
-    face_id = best["face_id"]
-    frow = (database.get_faces([face_id]) or [{}])[0]
-    person_crop = frow.get("crop_path")
-    emb = vector_store.get_vector("face", face_id)
-    with database.get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO saved_faces (face_id, detection_id, investigation, camera_id, "
-            " timestamp, confidence, face_crop, person_crop, embedding, gender, age, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (face_id, best["detection_id"], investigation, best.get("camera_id"),
-             best.get("timestamp"), best.get("quality"), None, person_crop,
-             _encode_emb(emb) if emb is not None else None,
-             best.get("gender"), best.get("age"), database._now()))
-        saved_id = cur.lastrowid
-    face_crop = _tight_face_crop(person_crop, saved_id) or person_crop
-    with database.get_conn() as conn:
-        conn.execute("UPDATE saved_faces SET face_crop=? WHERE saved_id=?", (face_crop, saved_id))
-        row = dict(conn.execute("SELECT * FROM saved_faces WHERE saved_id=?", (saved_id,)).fetchone())
-    return _row_urls(row)
+    # Forensic rule: never save a poor crop. If no face in the whole track clears
+    # the acceptance bar, report it instead of storing a low-quality image.
+    if config.FACE_DIAG_LOG:
+        print(f"[face] track {tid} (video {vid}) -> REJECTED: {scan.get('reason')} "
+              f"(scanned {scan.get('frames_seen')} full-res frames, "
+              f"{scan.get('faces_seen')} face(s) seen)")
+    return {"error": "No usable face found in this track.",
+            "reason": scan.get("reason"),
+            "frames_seen": scan.get("frames_seen"), "faces_seen": scan.get("faces_seen"),
+            "rejected_best": scan.get("rejected_best")}
 
 
 def list_saved() -> list[dict]:

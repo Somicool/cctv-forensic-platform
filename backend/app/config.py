@@ -325,8 +325,14 @@ FACE_SIMILAR_MIN = 0.30                      # min cosine similarity for a "simi
 # ORIGINAL frame + bbox, expand the box for context, and - if that frame has no
 # face - scan neighbouring frames of the SAME ByteTrack track (both directions),
 # scoring every candidate to pick the best face anywhere in the track.
-FACE_BOX_EXPAND = 0.18                       # expand person bbox by ~18% (10-20%)
+FACE_BOX_EXPAND = 0.20                       # expand person bbox by ~20% (15-25%)
 FACE_MIN_DET_SCORE = 0.35                    # accept a face above this det score
+# Forensic acceptance bar. If the best face in the WHOLE track is below these,
+# nothing is saved and the caller reports "No usable face found in this track."
+# (a poor crop is worse than none for forensic use).
+FACE_ACCEPT_QUALITY = 0.40                   # min composite quality to accept a face
+FACE_ACCEPT_MIN_PX = 22                      # min face side in ORIGINAL frame pixels
+FACE_DIAG_LOG = True                         # print per-candidate face diagnostics
 
 # --- BEST representative face per track (forensic-grade selection) ---
 # Every frame of a ByteTrack person track is inspected; each detected face is
