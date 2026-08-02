@@ -1,12 +1,13 @@
 import { NavLink } from 'react-router-dom'
 import {
-  IcDashboard, IcWorkspace, IcEvidence, IcCase, IcSettings, IcShield,
+  IcDashboard, IcWorkspace, IcEvidence, IcCase, IcSettings, IcShield, IcFace,
 } from '../components/icons'
 
 const NAV = [
   { to: '/dashboard', label: 'Dashboard', icon: IcDashboard },
   { to: '/workspace', label: 'Investigation Workspace', icon: IcWorkspace },
   { to: '/evidence', label: 'Evidence Gallery', icon: IcEvidence },
+  { to: '/faces', label: 'Face Gallery', icon: IcFace },
   { to: '/case', label: 'Case File', icon: IcCase },
   { to: '/settings', label: 'Settings', icon: IcSettings },
 ]

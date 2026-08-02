@@ -41,3 +41,6 @@ export const IcClock = ({ size = 18 }) => (
 export const IcShield = ({ size = 22 }) => (
   <svg {...base(size)} strokeWidth="1.6"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z" /><path d="M9 12l2 2 4-4" /></svg>
 )
+export const IcFace = ({ size = 20 }) => (
+  <svg {...base(size)}><circle cx="12" cy="12" r="9" /><circle cx="9" cy="10" r="1" /><circle cx="15" cy="10" r="1" /><path d="M8.5 14.5a4 4 0 0 0 7 0" /></svg>
+)

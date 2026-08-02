@@ -311,6 +311,41 @@ REGISTRY_PROVIDER = "demo"                   # "demo" | (future) "police_api"
 VEHICLE_REGISTRY_JSON = DATA_DIR / "vehicle_registry.json"
 
 # ------------------------------------------------------------------
+# Face Gallery - permanently saved "best face" of a person + face search.
+# Reuses the existing InsightFace 'face' FAISS index; nothing else changes.
+# ------------------------------------------------------------------
+SAVED_FACE_DIR = DATA_DIR / "saved_faces"    # tight best-face crops for saved faces
+SAVED_FACE_DIR.mkdir(parents=True, exist_ok=True)
+EXPANDED_CROP_DIR = DATA_DIR / "expanded_crops"   # context-padded person crops (display)
+EXPANDED_CROP_DIR.mkdir(parents=True, exist_ok=True)
+FACE_SIMILAR_MIN = 0.30                      # min cosine similarity for a "similar person" hit
+
+# --- Track-wide face recovery (fixes "No clear face available") ---
+# Stored search crops are often too tight (body only). We instead go back to the
+# ORIGINAL frame + bbox, expand the box for context, and - if that frame has no
+# face - scan neighbouring frames of the SAME ByteTrack track (both directions),
+# scoring every candidate to pick the best face anywhere in the track.
+FACE_BOX_EXPAND = 0.18                       # expand person bbox by ~18% (10-20%)
+FACE_MIN_DET_SCORE = 0.35                    # accept a face above this det score
+
+# --- BEST representative face per track (forensic-grade selection) ---
+# Every frame of a ByteTrack person track is inspected; each detected face is
+# scored on 9 factors and the single highest-quality face in the whole track wins
+# (a later, better face automatically replaces the running best). Very long tracks
+# are sampled EVENLY across their full span so coverage is never front-biased.
+FACE_TRACK_SCAN_FRAMES = 60                  # frames examined per track (even spread)
+FACE_LOW_QUALITY_THRESHOLD = 0.45            # below this the saved face is flagged low-quality
+# Composite quality weights (sum ~1.0)
+FACE_Q_W_DET = 0.22                          # detection confidence
+FACE_Q_W_SIZE = 0.18                         # face size / resolution
+FACE_Q_W_SHARP = 0.20                        # sharpness (blur)
+FACE_Q_W_POSE = 0.16                         # frontal pose
+FACE_Q_W_EYES = 0.08                         # eyes visible
+FACE_Q_W_BRIGHT = 0.06                       # brightness (well-exposed)
+FACE_Q_W_OCCL = 0.06                         # occlusion / truncation
+FACE_Q_W_NOISE = 0.04                        # image noise
+
+# ------------------------------------------------------------------
 # Processing modes: Fast (default, quick indexing/demos) vs Accurate
 # (full forensic pipeline). Every knob that differs between the two lives here,
 # so the single ingest_video() reads a preset instead of duplicating code.

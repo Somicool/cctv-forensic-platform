@@ -4,7 +4,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getLibrary, getVideos, getCameras, ingestAll, getIngestJob, stopIngest, uploadVideo,
-  deleteVideo, searchText, searchPlate, trackDetection, createExport, logActivity,
+  deleteVideo, searchText, searchPlate, trackDetection, createExport, logActivity, saveFace,
+  getFaceForDetection,
 } from '../api'
 import VideoPlayer from '../components/VideoPlayer'
 import TrackingViewer from '../components/TrackingViewer'
@@ -16,6 +17,34 @@ const STEPS = ['Upload', 'Process', 'Search', 'Review', 'Export']
 const MODES = [{ id: 'text', label: 'Describe' }, { id: 'plate', label: 'Plate' }]
 const LANGS = ['EN', 'HI', 'GU']
 const EXAMPLES = ['a person carrying a backpack', 'a man in a white shirt', 'a white truck', 'a red car']
+
+// Person result thumbnail: shows the EXPANDED person crop (from the original
+// frame, so the face isn't cut off) plus a small best-face preview when one is
+// instantly available. Falls back to the stored crop if anything is missing.
+function PersonThumb({ r }) {
+  const [src, setSrc] = useState(r.crop_url)
+  const [face, setFace] = useState(null)
+  useEffect(() => {
+    let alive = true
+    setSrc(r.crop_url); setFace(null)
+    if (r.class_label !== 'person') return
+    // deep=false -> instant (no AI): expanded crop + stored face preview if any
+    getFaceForDetection(r.detection_id, false)
+      .then((d) => {
+        if (!alive || !d) return
+        if (d.person_crop_url) setSrc(d.person_crop_url)
+        if (d.face_crop_url) setFace(d.face_crop_url)
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [r.detection_id, r.class_label, r.crop_url])
+  return (
+    <>
+      {src ? <img src={src} alt={r.class_label} loading="lazy" /> : <div className="empty">{r.class_label}</div>}
+      {face && <img className="ws-rc-face" src={face} alt="face" title="Best available face" />}
+    </>
+  )
+}
 
 // Build a dashboard activity entry for a search result (person or vehicle).
 function activityFromResult(r, action) {
@@ -56,6 +85,7 @@ export default function Workspace() {
   const [showExport, setShowExport] = useState(false)
   const [trackView, setTrackView] = useState(null)     // detection being replayed in the tracking viewer
   const [regPlate, setRegPlate] = useState(null)       // plate whose Vehicle Registry is open
+  const [toast, setToast] = useState(null)             // transient status toast
   const [footageOpen, setFootageOpen] = useState(true)
 
   const fileRef = useRef(null)
@@ -160,6 +190,17 @@ export default function Workspace() {
     logActivity(activityFromResult(r, 'found'))         // dashboard history: found
   }
   function trackObject(r) { logActivity(activityFromResult(r, 'tracked')); setTrackView(r) }
+  function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2800) }
+  async function saveFaceFor(r) {
+    try {
+      const inv = caseInfo?.title || caseInfo?.caseNumber || 'Investigation'
+      const rec = await saveFace({ detectionId: r.detection_id, investigation: inv })
+      showToast(`Face saved to Face Gallery (#${rec.saved_id}).`)
+    } catch (e) {
+      showToast(e?.response?.status === 404 ? 'No clear face found in this track.'
+        : (e?.response?.data?.detail || e.message || 'Could not save face.'))
+    }
+  }
   // Keep the active card visible as playback moves through results - but NOT when
   // the user explicitly clicked View/opened a clip (that scrolls to the player).
   useEffect(() => { if (activeId == null || pickScrollRef.current) return; cardRefs.current.get(activeId)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }) }, [activeId])
@@ -349,6 +390,7 @@ export default function Workspace() {
                       {inEvidence(cur.item.detection_id) ? '✓ In evidence' : '＋ Add to evidence'}
                     </button>
                     {cur.item.track_id != null && <button className="ws-btn-sm" onClick={() => trackObject(cur.item)} title="Follow this object in the video">⤳ Track object</button>}
+                    {cur.item.class_label === 'person' && <button className="ws-btn-sm" onClick={() => saveFaceFor(cur.item)} title="Save the clearest face to the Face Gallery">☺ Save Face</button>}
                     {cur.item.attributes?.plate_text && <button className="ws-btn-sm" onClick={() => setRegPlate(cur.item.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
                     <button className="ws-btn-sm" onClick={traceCurrent} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
                   </div>
@@ -412,7 +454,9 @@ export default function Workspace() {
                        className={'ws-rc ' + (activeId === r.detection_id ? 'active' : '')}>
                     <button className="ws-rc-hit" onClick={() => pickResult(r)} title="Click to view in the player">
                       <div className="ws-rc-thumb">
-                        {r.crop_url ? <img src={r.crop_url} alt={r.class_label} loading="lazy" /> : <div className="empty">{r.class_label}</div>}
+                        {r.class_label === 'person'
+                          ? <PersonThumb r={r} />
+                          : (r.crop_url ? <img src={r.crop_url} alt={r.class_label} loading="lazy" /> : <div className="empty">{r.class_label}</div>)}
                         <span className={'ws-score ' + scoreTier(r.score)}>{Math.round((r.score || 0) * 100)}%</span>
                         <div className="ws-rc-play">▶ View</div>
                       </div>
@@ -426,6 +470,7 @@ export default function Workspace() {
                     <button className={'ws-rc-add ' + (inEvidence(r.detection_id) ? 'on' : '')} onClick={() => toggleEvidence(r)} title={inEvidence(r.detection_id) ? 'In evidence' : 'Add to evidence'}>{inEvidence(r.detection_id) ? '✓' : '＋'}</button>
                     <div className="ws-rc-foot">
                       {r.track_id != null && <button className="ws-rc-act track" onClick={() => trackObject(r)} title="Follow this object in the video">⤳ Track</button>}
+                      {r.class_label === 'person' && <button className="ws-rc-act face" onClick={() => saveFaceFor(r)} title="Save the clearest face to the Face Gallery">☺ Save Face</button>}
                       {r.attributes?.plate_text && <button className="ws-rc-act info" onClick={() => setRegPlate(r.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
                     </div>
                   </div>
@@ -482,6 +527,8 @@ export default function Workspace() {
         onAddEvidence={toggleEvidence} inEvidence={inEvidence} />}
 
       {regPlate && <VehicleInfo plate={regPlate} onClose={() => setRegPlate(null)} />}
+
+      {toast && <div className="ws-toast">{toast}</div>}
     </div>
   )
 }

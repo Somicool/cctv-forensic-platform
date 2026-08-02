@@ -17,6 +17,7 @@ from .routes import router
 from .routes_library import router as library_router
 from .routes_registry import router as registry_router
 from .routes_history import router as history_router
+from .routes_faces import router as faces_router
 
 
 
@@ -74,6 +75,7 @@ app.include_router(router, prefix="/api")
 app.include_router(library_router, prefix="/api")
 app.include_router(registry_router, prefix="/api")
 app.include_router(history_router, prefix="/api")
+app.include_router(faces_router, prefix="/api")
 
 
 # Serve crop/frame images the search results point to. media_url() emits

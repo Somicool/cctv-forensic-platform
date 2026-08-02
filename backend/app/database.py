@@ -119,6 +119,42 @@ CREATE TABLE IF NOT EXISTS vehicle_registry (
     updated_at    TEXT
 );
 
+-- Face Gallery: permanently saved best-faces of persons. Reuses the existing
+-- 'face' FAISS index for "find similar". See app/faces_gallery.py.
+CREATE TABLE IF NOT EXISTS saved_faces (
+    saved_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    face_id       INTEGER,
+    detection_id  INTEGER,
+    investigation TEXT,
+    camera_id     TEXT,
+    timestamp     TEXT,
+    confidence    REAL,
+    face_crop     TEXT,
+    person_crop   TEXT,
+    embedding     TEXT,       -- base64 float32 face embedding (permanent copy)
+    gender        TEXT,
+    age           INTEGER,
+    created_at    TEXT
+);
+
+-- Cached BEST representative face per ByteTrack person track (so search results
+-- can show it cheaply and repeat scans are free). Rebuilt on demand.
+CREATE TABLE IF NOT EXISTS track_best_face (
+    video_id      INTEGER,
+    track_id      INTEGER,
+    detection_id  INTEGER,
+    quality       REAL,
+    low_quality   INTEGER,
+    face_crop     TEXT,
+    preview_crop  TEXT,
+    person_crop   TEXT,
+    metrics       TEXT,
+    frames_seen   INTEGER,
+    faces_seen    INTEGER,
+    created_at    TEXT,
+    PRIMARY KEY (video_id, track_id)
+);
+
 -- Investigation activity history (persons + vehicles searched / found / tracked).
 -- Persistent dashboard history; see app/history.py.
 CREATE TABLE IF NOT EXISTS activity_history (
@@ -170,6 +206,12 @@ def _migrate(conn) -> None:
     for col, decl in (("votes", "INTEGER"), ("source", "TEXT"), ("plate_crop", "TEXT")):
         if col not in pcols:
             conn.execute(f"ALTER TABLE plates ADD COLUMN {col} {decl}")
+    # Face Gallery: preview image, low-quality flag, and the full metric breakdown.
+    scols = {r["name"] for r in conn.execute("PRAGMA table_info(saved_faces)").fetchall()}
+    for col, decl in (("preview_crop", "TEXT"), ("low_quality", "INTEGER"),
+                      ("quality_metrics", "TEXT")):
+        if col not in scols:
+            conn.execute(f"ALTER TABLE saved_faces ADD COLUMN {col} {decl}")
 
 
 def init_db() -> None:

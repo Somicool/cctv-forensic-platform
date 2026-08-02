@@ -145,6 +145,33 @@ export async function clearActivity() {
   return data
 }
 
+// ---- Face Gallery ----
+// deep=false -> instant preview (no AI). deep=true -> full track scan.
+export async function getFaceForDetection(detectionId, deep = true) {
+  const { data } = await api.get(`/face/for-detection/${detectionId}?deep=${deep}`)
+  return data
+}
+
+export async function saveFace({ detectionId, investigation }) {
+  const { data } = await api.post('/faces/save', { detection_id: detectionId, investigation })
+  return data
+}
+
+export async function listSavedFaces() {
+  const { data } = await api.get('/faces/saved')
+  return data
+}
+
+export async function deleteSavedFace(savedId) {
+  const { data } = await api.delete(`/faces/saved/${savedId}`)
+  return data
+}
+
+export async function findSimilarFaces(savedId, topK = 60) {
+  const { data } = await api.get(`/faces/saved/${savedId}/similar?top_k=${topK}`)
+  return data
+}
+
 export async function updateVehicleRegistry(plate, updates) {
   const { data } = await api.put(`/vehicle-registry/${encodeURIComponent(plate)}`, updates)
   return data
