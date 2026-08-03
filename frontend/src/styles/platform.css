@@ -411,6 +411,51 @@ body {
   animation: fpToast .2s ease; }
 @keyframes fpToast { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
+/* ============================ Case File ============================ */
+.cf-alert { padding: 11px 14px; border-radius: 10px; font-size: 12.5px; margin-bottom: 16px; line-height: 1.7; }
+.cf-alert.err { background: rgba(255,80,90,.1); color: #ff9aa2; border: 1px solid #7a2530; }
+.cf-alert.ok { background: rgba(46,204,130,.1); color: #8ff0b6; border: 1px solid #2c6b45; }
+.cf-alert code { font-family: ui-monospace, monospace; font-size: 11.5px; background: rgba(0,0,0,.25); padding: 1px 6px; border-radius: 4px; }
+.cf-hash { word-break: break-all; }
+.cf-empty { padding: 26px 20px; text-align: center; color: var(--fp-muted); font-size: 12.5px; line-height: 1.8;
+  border: 1px dashed var(--fp-border-2); border-radius: 12px; }
+.cf-empty.small { padding: 16px; font-size: 12px; }
+.cf-req { color: var(--fp-warn); }
+.cf-note { margin-top: 10px; font-size: 11px; color: var(--fp-muted); line-height: 1.7;
+  background: var(--fp-surface-2); border: 1px solid var(--fp-border); border-radius: 9px; padding: 9px 11px; }
+
+.cf-list { display: flex; flex-direction: column; gap: 8px; }
+.cf-row { display: flex; align-items: center; gap: 11px; padding: 9px; border-radius: 11px;
+  background: var(--fp-surface-2); border: 1px solid var(--fp-border); }
+.cf-row:hover { border-color: var(--fp-border-2); }
+.cf-idx { width: 20px; flex-shrink: 0; text-align: center; font-size: 11px; font-weight: 700; color: var(--fp-muted); font-family: ui-monospace, monospace; }
+.cf-thumb { width: 54px; height: 54px; object-fit: cover; border-radius: 9px; flex-shrink: 0;
+  border: 1px solid var(--fp-border); background: var(--fp-surface); }
+.cf-thumb.ph { display: grid; place-items: center; font-size: 10px; color: var(--fp-muted); text-transform: capitalize; }
+.cf-info { flex: 1; min-width: 0; }
+.cf-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.cf-top .lb { font-size: 13.5px; font-weight: 650; text-transform: capitalize; }
+.cf-top .cam { font-size: 10.5px; color: var(--fp-accent-2); font-family: ui-monospace, monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.cf-sub { font-size: 11.5px; color: var(--fp-muted); text-transform: capitalize; margin-top: 2px; }
+.cf-ts { font-size: 10.5px; color: var(--fp-text-dim); margin-top: 5px; font-family: ui-monospace, monospace;
+  display: flex; align-items: center; gap: 8px; }
+.cf-plate { font-weight: 800; letter-spacing: .6px; color: #10151f; background: #f2c14e;
+  border: 1px solid #c99a26; border-radius: 4px; padding: 1px 7px; }
+.cf-x { width: 26px; height: 26px; flex-shrink: 0; border-radius: 50%; cursor: pointer; font-size: 16px; line-height: 1;
+  background: none; border: 1px solid var(--fp-border); color: var(--fp-muted); }
+.cf-x:hover { border-color: var(--fp-danger); color: #ffb3bb; }
+.cf-faces { display: flex; gap: 8px; flex-wrap: wrap; }
+.cf-faces img { width: 52px; height: 52px; object-fit: cover; border-radius: 9px; border: 1px solid var(--fp-border); }
+
+.cf-exports { display: flex; flex-direction: column; gap: 9px; max-height: 340px; overflow-y: auto; }
+.cf-exp { padding: 10px 11px; border-radius: 10px; background: var(--fp-surface-2); border: 1px solid var(--fp-border); }
+.cf-exp-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cf-exp-top code { font-size: 11.5px; font-family: ui-monospace, monospace; color: var(--fp-accent-2); font-weight: 700; }
+.cf-exp-meta { font-size: 11px; color: var(--fp-muted); margin-top: 4px; }
+.cf-exp-meta.mono { font-family: ui-monospace, monospace; }
+.cf-exp-hash { font-size: 10px; color: var(--fp-text-dim); margin-top: 5px; font-family: ui-monospace, monospace; }
+
 /* ============================ Face Gallery ============================ */
 .fg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
 .fg-card { cursor: pointer; background: var(--fp-surface); border: 1px solid var(--fp-border); border-radius: 14px; overflow: hidden;
