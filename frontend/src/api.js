@@ -172,6 +172,32 @@ export async function findSimilarFaces(savedId, topK = 60) {
   return data
 }
 
+// ---- System / Settings ----
+export async function getSystemInfo() {
+  const { data } = await api.get('/system/info')
+  return data
+}
+
+export async function updateSettings(payload) {
+  const { data } = await api.post('/system/settings', payload)
+  return data
+}
+
+export async function recomputePlates(videoId) {
+  const { data } = await api.post('/recompute-plates' + (videoId ? `?video_id=${videoId}` : ''))
+  return data
+}
+
+export async function recomputeColors(videoId) {
+  const { data } = await api.post('/recompute-colors' + (videoId ? `?video_id=${videoId}` : ''))
+  return data
+}
+
+export async function backfillRegistry() {
+  const { data } = await api.post('/vehicle-registry/backfill')
+  return data
+}
+
 export async function updateVehicleRegistry(plate, updates) {
   const { data } = await api.put(`/vehicle-registry/${encodeURIComponent(plate)}`, updates)
   return data
