@@ -172,6 +172,29 @@ export async function findSimilarFaces(savedId, topK = 60) {
   return data
 }
 
+// ---- Journey Reconstruction ----
+export async function reconstructJourney({ detectionId, cameras, investigation }) {
+  const { data } = await api.post('/journey/reconstruct', {
+    detection_id: detectionId, cameras: cameras || null, investigation,
+  })
+  return data
+}
+
+export async function listJourneys(investigation) {
+  const { data } = await api.get('/journeys' + (investigation ? `?investigation=${encodeURIComponent(investigation)}` : ''))
+  return data
+}
+
+export async function getJourney(journeyId) {
+  const { data } = await api.get(`/journeys/${journeyId}`)
+  return data
+}
+
+export async function deleteJourney(journeyId) {
+  const { data } = await api.delete(`/journeys/${journeyId}`)
+  return data
+}
+
 // ---- System / Settings ----
 export async function getSystemInfo() {
   const { data } = await api.get('/system/info')

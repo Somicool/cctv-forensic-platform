@@ -5,8 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getLibrary, getVideos, getCameras, ingestAll, getIngestJob, stopIngest, uploadVideo,
   deleteVideo, searchText, searchPlate, trackDetection, createExport, logActivity, saveFace,
-  getFaceForDetection,
+  getFaceForDetection, reconstructJourney,
 } from '../api'
+import { useNavigate } from 'react-router-dom'
 import VideoPlayer from '../components/VideoPlayer'
 import TrackingViewer from '../components/TrackingViewer'
 import VehicleInfo from '../components/VehicleInfo'
@@ -86,6 +87,8 @@ export default function Workspace() {
   const [trackView, setTrackView] = useState(null)     // detection being replayed in the tracking viewer
   const [regPlate, setRegPlate] = useState(null)       // plate whose Vehicle Registry is open
   const [toast, setToast] = useState(null)             // transient status toast
+  const [journeyFor, setJourneyFor] = useState(null)   // person awaiting journey scope choice
+  const navigate = useNavigate()
   const [footageOpen, setFootageOpen] = useState(true)
 
   const fileRef = useRef(null)
@@ -190,7 +193,18 @@ export default function Workspace() {
     logActivity(activityFromResult(r, 'found'))         // dashboard history: found
   }
   function trackObject(r) { logActivity(activityFromResult(r, 'tracked')); setTrackView(r) }
-  function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2800) }
+  function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 3200) }
+  async function runJourney(item, cams) {
+    setJourneyFor(null); showToast('Reconstructing journey…')
+    try {
+      const inv = caseInfo?.title || caseInfo?.caseNumber || 'Investigation'
+      const j = await reconstructJourney({ detectionId: item.detection_id, cameras: cams, investigation: inv })
+      showToast(`Journey #${j.journey_id}: ${j.primary.stats.cameras} camera(s), ${Math.round(j.primary.confidence * 100)}% confidence`)
+      navigate('/journey')
+    } catch (e) {
+      showToast(e?.response?.data?.detail || e.message || 'Journey reconstruction failed')
+    }
+  }
   async function saveFaceFor(r) {
     try {
       const inv = caseInfo?.title || caseInfo?.caseNumber || 'Investigation'
@@ -391,6 +405,7 @@ export default function Workspace() {
                     </button>
                     {cur.item.track_id != null && <button className="ws-btn-sm" onClick={() => trackObject(cur.item)} title="Follow this object in the video">⤳ Track object</button>}
                     {cur.item.class_label === 'person' && <button className="ws-btn-sm" onClick={() => saveFaceFor(cur.item)} title="Save the clearest face to the Face Gallery">☺ Save Face</button>}
+                    {cur.item.class_label === 'person' && <button className="ws-btn-sm" onClick={() => setJourneyFor(cur.item)} title="Reconstruct movement across cameras">⇢ Journey Reconstruction</button>}
                     {cur.item.attributes?.plate_text && <button className="ws-btn-sm" onClick={() => setRegPlate(cur.item.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
                     <button className="ws-btn-sm" onClick={traceCurrent} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
                   </div>
@@ -471,6 +486,7 @@ export default function Workspace() {
                     <div className="ws-rc-foot">
                       {r.track_id != null && <button className="ws-rc-act track" onClick={() => trackObject(r)} title="Follow this object in the video">⤳ Track</button>}
                       {r.class_label === 'person' && <button className="ws-rc-act face" onClick={() => saveFaceFor(r)} title="Save the clearest face to the Face Gallery">☺ Save Face</button>}
+                      {r.class_label === 'person' && <button className="ws-rc-act jn" onClick={() => setJourneyFor(r)} title="Reconstruct movement across cameras">⇢ Journey</button>}
                       {r.attributes?.plate_text && <button className="ws-rc-act info" onClick={() => setRegPlate(r.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
                     </div>
                   </div>
@@ -528,7 +544,53 @@ export default function Workspace() {
 
       {regPlate && <VehicleInfo plate={regPlate} onClose={() => setRegPlate(null)} />}
 
+      {journeyFor && <JourneyScope item={journeyFor} cameras={cameras}
+        onClose={() => setJourneyFor(null)} onRun={runJourney} />}
+
       {toast && <div className="ws-toast">{toast}</div>}
+    </div>
+  )
+}
+
+/* ------------------- Journey scope picker (all vs selected cameras) ------------------- */
+function JourneyScope({ item, cameras, onClose, onRun }) {
+  const [mode, setMode] = useState('all')          // 'all' | 'selected'
+  const [sel, setSel] = useState(new Set())
+  useEffect(() => { const esc = (e) => { if (e.key === 'Escape') onClose() }; window.addEventListener('keydown', esc); return () => window.removeEventListener('keydown', esc) }, [onClose])
+  const toggle = (id) => setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n })
+
+  return (
+    <div className="ws-overlay" onMouseDown={onClose}>
+      <div className="ws-modal" style={{ maxWidth: 560 }} onMouseDown={(e) => e.stopPropagation()}>
+        <button className="ws-modal-x" onClick={onClose}>×</button>
+        <h3>Journey Reconstruction</h3>
+        <p className="muted small" style={{ marginTop: -6 }}>
+          Match this person across cameras using face + person Re-ID (clothing alone is never used).
+        </p>
+        <div className="jn-scope">
+          <button className={'st-mode ' + (mode === 'all' ? 'on' : '')} onClick={() => setMode('all')}>All cameras</button>
+          <button className={'st-mode ' + (mode === 'selected' ? 'on' : '')} onClick={() => setMode('selected')}>Selected cameras</button>
+        </div>
+        {mode === 'selected' && (
+          <div className="ws-list" style={{ maxHeight: 220, marginTop: 12 }}>
+            {(cameras || []).map((c) => (
+              <label key={c.camera_id} className="jn-cam-pick">
+                <input type="checkbox" checked={sel.has(c.camera_id)} onChange={() => toggle(c.camera_id)} />
+                <span className="id">{c.camera_id}</span>
+                {(c.lat != null && c.lon != null) && <span className="st-gps">GPS</span>}
+              </label>
+            ))}
+          </div>
+        )}
+        <div className="ws-modal-actions" style={{ marginTop: 16 }}>
+          <button className="fp-btn" onClick={onClose}>Cancel</button>
+          <button className="fp-btn primary"
+                  disabled={mode === 'selected' && sel.size === 0}
+                  onClick={() => onRun(item, mode === 'all' ? null : [...sel])}>
+            Reconstruct journey
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

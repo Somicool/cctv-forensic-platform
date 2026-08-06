@@ -44,3 +44,6 @@ export const IcShield = ({ size = 22 }) => (
 export const IcFace = ({ size = 20 }) => (
   <svg {...base(size)}><circle cx="12" cy="12" r="9" /><circle cx="9" cy="10" r="1" /><circle cx="15" cy="10" r="1" /><path d="M8.5 14.5a4 4 0 0 0 7 0" /></svg>
 )
+export const IcJourney = ({ size = 20 }) => (
+  <svg {...base(size)}><circle cx="6" cy="7" r="2.5" /><circle cx="18" cy="17" r="2.5" /><path d="M6 9.5v3a3 3 0 0 0 3 3h3a3 3 0 0 1 3 3v-2.5" strokeDasharray="3 2.5" /></svg>
+)

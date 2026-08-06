@@ -47,5 +47,26 @@
     "location": "Piplod / VR Mall, Surat",
     "lat": 21.145,
     "lon": 72.772
+  },
+  {
+    "camera_id": "IMG_",
+    "name": "nanbajar",
+    "location": null,
+    "lat": null,
+    "lon": null
+  },
+  {
+    "camera_id": "IMG-8058",
+    "name": "nanabajar 2",
+    "location": null,
+    "lat": null,
+    "lon": null
+  },
+  {
+    "camera_id": "15067301_2560_1440_30fps",
+    "name": "nanabajar 3",
+    "location": null,
+    "lat": null,
+    "lon": null
   }
 ]

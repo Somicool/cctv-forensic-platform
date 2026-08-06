@@ -19,6 +19,7 @@ from .routes_registry import router as registry_router
 from .routes_history import router as history_router
 from .routes_faces import router as faces_router
 from .routes_system import router as system_router
+from .routes_journey import router as journey_router
 
 
 
@@ -78,6 +79,7 @@ app.include_router(registry_router, prefix="/api")
 app.include_router(history_router, prefix="/api")
 app.include_router(faces_router, prefix="/api")
 app.include_router(system_router, prefix="/api")
+app.include_router(journey_router, prefix="/api")
 
 
 # Serve crop/frame images the search results point to. media_url() emits

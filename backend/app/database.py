@@ -155,6 +155,21 @@ CREATE TABLE IF NOT EXISTS track_best_face (
     PRIMARY KEY (video_id, track_id)
 );
 
+-- Reconstructed cross-camera journeys, stored permanently per investigation.
+-- Full result (nodes/legs/alternatives) is kept as JSON; see app/journey.py.
+CREATE TABLE IF NOT EXISTS journeys (
+    journey_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    investigation          TEXT,
+    reference_detection_id INTEGER,
+    scope                  TEXT,
+    confidence             REAL,
+    camera_count           INTEGER,
+    distance_km            REAL,
+    span_seconds           REAL,
+    data                   TEXT,
+    created_at             TEXT
+);
+
 -- Investigation activity history (persons + vehicles searched / found / tracked).
 -- Persistent dashboard history; see app/history.py.
 CREATE TABLE IF NOT EXISTS activity_history (

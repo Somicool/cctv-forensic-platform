@@ -411,6 +411,58 @@ body {
   animation: fpToast .2s ease; }
 @keyframes fpToast { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
+/* ============================ Journey ============================ */
+.ws-rc-act.jn { color: #c3a6ff; border-color: #4a3a75; }
+.ws-rc-act.jn:hover { background: rgba(150,110,255,.14); border-color: #9a7bff; color: #fff; }
+.jn-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.jn-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 14px; }
+.jn-chip { flex-shrink: 0; padding: 8px 13px; border-radius: 10px; cursor: pointer; font-size: 12px;
+  background: var(--fp-surface); color: var(--fp-text-dim); border: 1px solid var(--fp-border); text-align: left; }
+.jn-chip:hover { border-color: var(--fp-border-2); }
+.jn-chip.on { border-color: var(--fp-accent); color: var(--fp-text); box-shadow: 0 0 0 1px var(--fp-accent); }
+.jn-chip b { color: var(--fp-accent-2); }
+.jn-chip .d { display: block; font-size: 10px; color: var(--fp-muted); margin-top: 2px; }
+.jn-vars { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 16px; }
+
+.jn-map { background: var(--fp-surface-2); border: 1px solid var(--fp-border); border-radius: 12px; padding: 6px; }
+.jn-svg { width: 100%; height: auto; display: block; }
+.jn-map-empty { padding: 40px; text-align: center; color: var(--fp-muted); }
+.jn-map-foot { font-size: 10.5px; color: var(--fp-muted); padding: 7px 9px 3px; line-height: 1.6; }
+.jn-node { cursor: pointer; }
+.jn-node-n { font-size: 11px; font-weight: 800; fill: var(--fp-accent-2); }
+.jn-node-t { font-size: 11px; font-weight: 700; fill: #fff; font-family: ui-monospace, monospace; }
+.jn-node-c { font-size: 9.5px; fill: var(--fp-muted); }
+.jn-leg-t { font-size: 9.5px; fill: var(--fp-text-dim); font-family: ui-monospace, monospace; }
+.jn-leg-t.bad { fill: #ff9aa2; }
+
+.jn-timeline { display: flex; flex-direction: column; }
+.jn-tl-item { position: relative; display: grid; grid-template-columns: 52px 1fr 44px; gap: 9px; align-items: start;
+  padding: 9px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; }
+.jn-tl-item:hover { background: var(--fp-surface-2); }
+.jn-tl-item.on { background: var(--fp-surface-2); border-color: var(--fp-accent); }
+.jn-tl-time { font-size: 12px; font-weight: 800; font-family: ui-monospace, monospace; color: var(--fp-accent-2); }
+.jn-tl-body { min-width: 0; }
+.jn-tl-top { display: flex; align-items: center; gap: 7px; }
+.jn-tl-top .cam { font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jn-ev { font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px;
+  border-radius: 4px; flex-shrink: 0; border: 1px solid var(--fp-border); }
+.jn-ev.face { color: #8ff0b6; border-color: #2c6b45; background: rgba(46,204,130,.12); }
+.jn-ev.reid { color: #9ad0ff; border-color: var(--fp-border-2); background: rgba(79,124,255,.12); }
+.jn-ev\.appearance-only, .jn-ev[class*="appearance"] { color: #ffcf80; border-color: #7a5a1a; background: rgba(240,180,41,.1); }
+.jn-tl-meta { font-size: 10.5px; color: var(--fp-muted); margin-top: 3px; }
+.jn-tl-acts { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+.jn-tl-thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; border: 1px solid var(--fp-border); }
+.jn-tl-leg { grid-column: 1 / -1; font-size: 10.5px; color: var(--fp-text-dim); padding: 6px 0 2px 8px;
+  border-left: 2px dashed var(--fp-border-2); margin: 6px 0 0 22px; font-family: ui-monospace, monospace; }
+.jn-tl-leg.bad { color: #ff9aa2; border-left-color: #7a2530; }
+.jn-tl-end { font-size: 11px; color: var(--fp-muted); padding: 10px 9px 2px; font-family: ui-monospace, monospace; }
+
+.jn-scope { display: flex; gap: 8px; margin-top: 12px; }
+.jn-cam-pick { display: flex; align-items: center; gap: 9px; padding: 7px 4px; font-size: 12.5px;
+  border-bottom: 1px solid var(--fp-border); cursor: pointer; }
+.jn-cam-pick .id { flex: 1; min-width: 0; font-family: ui-monospace, monospace; font-size: 11.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* ============================ Settings ============================ */
 .st-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
   padding: 6px 0; border-bottom: 1px solid var(--fp-border); }
