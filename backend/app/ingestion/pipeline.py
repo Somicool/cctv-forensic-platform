@@ -203,13 +203,19 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
                 region_split=region_split)
             t_embed += time.time() - t
 
-            # OSNet re-ID for the person crops in this chunk
+            # OSNet re-ID for the person crops in this chunk.
+            # The tracker already embedded these people to verify their track
+            # associations (identity_guard), so REUSE those vectors - re-embedding
+            # here would double the OSNet work for an identical result. Only crops
+            # the tracker did not embed fall back to a fresh pass.
             t = time.time()
             person_idx = [i for i, d in enumerate(cdets) if d.class_id in config.PERSON_CLASSES]
-            reid_embs = (reid_embedder.embed_persons([cdets[i].crop_path for i in person_idx])
-                         if person_idx else None)
-            reid_by_det = ({person_idx[k]: reid_embs[k] for k in range(len(person_idx))}
-                           if reid_embs is not None else {})
+            reid_by_det = {i: cdets[i].reid_vec for i in person_idx
+                           if getattr(cdets[i], "reid_vec", None) is not None}
+            missing = [i for i in person_idx if i not in reid_by_det]
+            if missing:
+                fresh = reid_embedder.embed_persons([cdets[i].crop_path for i in missing])
+                reid_by_det.update({missing[k]: fresh[k] for k in range(len(missing))})
             t_reid += time.time() - t
 
             # store detections + attributes for this chunk in one bulk transaction

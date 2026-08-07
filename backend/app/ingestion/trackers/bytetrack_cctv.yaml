@@ -1,0 +1,52 @@
+# ByteTrack tuned for sampled CCTV footage (2 fps by default, fixed cameras).
+#
+# Why the defaults are wrong for this project
+# -------------------------------------------
+# Ultralytics' defaults assume dense video (25-30 fps) where an object barely
+# moves between consecutive frames. We sample at DEFAULT_FPS (2), so between two
+# processed frames a walking person moves most of their own body width and the
+# IoU between successive boxes is often near zero. With match_thresh 0.8
+# (IoU >= 0.2) that association fails, the track dies, and the person is handed a
+# brand-new id a moment later - the "track fragmentation" and "ID switch"
+# symptoms.
+#
+# Second problem: the pipeline used to hand YOLO conf=0.4, so every detection
+# ByteTrack received was already high confidence. ByteTrack's defining feature is
+# its SECOND association stage over LOW-score boxes, which is what carries a
+# track through partial occlusion. With a 0.4 pre-filter that stage had nothing
+# to work with and was effectively disabled. The tracker is now fed
+# TRACK_INPUT_CONF (0.15) and detections are filtered to DETECT_CONF only when
+# they are about to be stored, so the low-score stage works as designed without
+# changing what ends up in the database.
+#
+# Values below are deliberately permissive on MOTION, because appearance is
+# verified separately: identity_guard.py re-checks every association with a
+# person ReID embedding and refuses to let motion alone move an identity. Being
+# generous here plus strict there recovers occlusions without inviting switches.
+tracker_type: bytetrack
+
+# First-stage threshold. Detections at/above this drive normal association.
+# Sits just above DETECT_CONF so stored-quality boxes lead the matching.
+track_high_thresh: 0.45
+
+# Second-stage threshold for low-score boxes. This is the occlusion-recovery
+# path: a half-hidden person still scores ~0.2 and can now hold their track.
+track_low_thresh: 0.12
+
+# Starting a NEW identity demands a confident detection. Raised well above the
+# default so a weak, half-occluded box extends an existing track instead of
+# inventing a new person.
+new_track_thresh: 0.55
+
+# Frames a lost track stays alive. These are SAMPLED frames, so at 2 fps this is
+# ~45 seconds of tolerance - long enough to survive a bus, a crowd or a pillar.
+# Raising this normally increases ID-switch risk; here that risk is absorbed by
+# the appearance check in identity_guard.py.
+track_buffer: 90
+
+# Association threshold on cost (1 - IoU), so a match needs IoU >= 0.12.
+# Permissive on purpose: at 2 fps successive boxes of one person overlap little.
+match_thresh: 0.88
+
+# Weight IoU by detection confidence, which stabilises weak boxes.
+fuse_score: True

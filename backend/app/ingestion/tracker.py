@@ -20,6 +20,7 @@ from pathlib import Path
 import cv2
 
 from .. import config, ingest_jobs, ingest_progress
+from . import identity_guard, reid_embedder
 from .detector import get_model
 from .detectors import plugins as det_plugins
 
@@ -38,6 +39,13 @@ class TrackedDetection:
     crop_path: str
     frame_path: str | None = None
     crop_img: object = None   # in-memory (downscaled) BGR crop for CLIP/attrs - avoids re-decode
+    # Person ReID embedding computed during tracking for the appearance guard.
+    # The pipeline REUSES this instead of embedding the crop again, so verifying
+    # associations costs no extra OSNet forward passes.
+    reid_vec: object = None
+    # How the appearance guard resolved this detection's association:
+    # accept / reacquire / reject-new / new. Diagnostic only.
+    assoc: str | None = None
 
 
 def _parse_start_time(start_time) -> datetime:
@@ -107,16 +115,22 @@ def track_video(
     dets: list[TrackedDetection] = []
     tracks: dict[int, list] = defaultdict(list)
     frames_meta: list[dict] = []
+    guard_stats = None
     for chunk in iter_track_chunks(video_path, camera_id, start_time=start_time, fps=fps,
                                    frame_root=frame_root, crop_root=crop_root,
                                    save_frames=save_frames, imgsz=imgsz,
                                    chunk_frames=None):
         dets.extend(chunk["dets"])
         frames_meta.extend(chunk["frames"])
+        guard_stats = chunk.get("guard") or guard_stats
         for d in chunk["dets"]:
             tracks[d.track_id].append((d.frame_number, d.bbox))
     print(f"[track] {Path(video_path).name}: {len(frames_meta)} frames, {len(dets)} detections, "
           f"{len(tracks)} unique tracks (camera {camera_id})")
+    if guard_stats:
+        print(f"[track] appearance guard: {guard_stats['switches_blocked']} identity switches "
+              f"blocked, {guard_stats['reacquired']} tracks re-acquired after occlusion, "
+              f"reject rate {guard_stats['reject_rate']:.1%}")
     return dets, dict(tracks), frames_meta
 
 
@@ -161,12 +175,19 @@ def iter_track_chunks(video_path, camera_id: str, start_time=None, fps: float | 
     primary_classes = (config.PRIMARY_NONVEHICLE_CLASSES if use_plugins
                        else config.PRIMARY_CLASSES)
     model = get_model()
+    # Feed the tracker LOW-confidence boxes too: ByteTrack's second association
+    # stage needs them to carry a track through occlusion. Detections are filtered
+    # back to config.DETECT_CONF before they are stored, so the database keeps the
+    # same quality floor it always had.
+    track_conf = min(config.TRACK_INPUT_CONF, config.DETECT_CONF)
     results = model.track(
         source=str(video_path), stream=True, tracker=config.TRACKER_CFG,
-        classes=list(primary_classes), conf=config.DETECT_CONF,
+        classes=list(primary_classes), conf=track_conf,
         imgsz=imgsz or config.YOLO_IMGSZ, vid_stride=stride, device=config.DEVICE, verbose=False,
     )
     sec_tracker = det_plugins.IoUTracker() if use_plugins else None
+    # Appearance guard: motion may propose an association, appearance decides it.
+    guard = identity_guard.IdentityGuard() if config.TRACK_APPEARANCE_GUARD else None
 
     buf_dets: list[TrackedDetection] = []
     buf_frames: list[dict] = []
@@ -211,30 +232,64 @@ def iter_track_chunks(video_path, camera_id: str, start_time=None, fps: float | 
                 raw.append({"cls_id": s["cls_id"], "label": s["label"], "conf": s["conf"],
                             "xyxy": s["xyxy"], "track_id": s["track_id"]})
 
+        # Keep the low-confidence boxes only for ByteTrack's benefit - never store
+        # them. This is what preserves the previous database quality floor.
+        keep = []
         for d in raw:
+            if d["conf"] < config.DETECT_CONF:
+                continue
             x1, y1, x2, y2 = d["xyxy"]
             cx1, cy1, cx2, cy2 = _padded_box(x1, y1, x2, y2, fw, fh)
             crop = frame[cy1:cy2, cx1:cx2]
             if not _crop_ok(crop, (x1, y1, x2, y2), fw, fh):
                 continue
+            keep.append((d, crop))
+
+        # ONE batched ReID pass over this frame's people, used both to verify the
+        # associations here and (reused, not recomputed) by the pipeline later.
+        small = [_downscale_copy(c) for _d, c in keep]
+        person_i = [i for i, (d, _c) in enumerate(keep)
+                    if d["cls_id"] in config.PERSON_CLASSES]
+        embs = {}
+        if guard is not None and person_i:
+            try:
+                vecs = reid_embedder.embed_persons([small[i] for i in person_i])
+                embs = {person_i[k]: vecs[k] for k in range(len(person_i))}
+            except Exception as exc:                      # never fail ingestion on this
+                print(f"[track] appearance guard disabled for this frame: {exc}")
+                embs = {}
+
+        seen_ids = set()
+        for i, (d, crop) in enumerate(keep):
             tid, label = d["track_id"], d["label"]
+            x1, y1, x2, y2 = d["xyxy"]
+            assoc = None
+            vec = embs.get(i)
+            if vec is not None:
+                tid, assoc = guard.resolve(tid, vec, sampled)
+                seen_ids.add(tid)
             cp = crop_dir / f"f{sampled:06d}_t{tid:04d}_{label}.jpg"
             cv2.imwrite(str(cp), crop)
             buf_dets.append(TrackedDetection(
                 camera_id=camera_id, video_name=video_path.name, track_id=tid,
                 frame_number=original_frame, timestamp=ts.isoformat(), class_id=d["cls_id"],
                 class_label=label, confidence=d["conf"],
-                bbox=(x1, y1, x2 - x1, y2 - y1), crop_path=str(cp),
-                frame_path=frame_path, crop_img=_downscale_copy(crop)))
+                bbox=(x1, y1, x2 - x1, y2 - y1),
+                crop_path=str(cp), frame_path=frame_path, crop_img=small[i],
+                reid_vec=vec, assoc=assoc))
+        if guard is not None:
+            guard.retire(sampled, seen_ids)
         sampled += 1
 
         if chunk_frames and sampled % chunk_frames == 0:
             yield {"dets": buf_dets, "frames": buf_frames, "sampled": sampled,
-                   "total_sampled": total_sampled}
+                   "total_sampled": total_sampled,
+                   "guard": guard.summary() if guard else None}
             buf_dets, buf_frames = [], []
 
     yield {"dets": buf_dets, "frames": buf_frames, "sampled": sampled,
-           "total_sampled": max(total_sampled, sampled)}
+           "total_sampled": max(total_sampled, sampled),
+           "guard": guard.summary() if guard else None}
 
 
 def _cli():

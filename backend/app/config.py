@@ -81,8 +81,45 @@ PRIMARY_CLASSES = set(DETECT_CLASSES)
 # Groupings the attribute extractor uses to decide which attributes apply.
 PERSON_CLASSES = {0}
 VEHICLE_CLASSES = {1, 2, 3, 5, 7}
-DETECT_CONF = 0.4
-TRACKER_CFG = "bytetrack.yaml"             # ultralytics built-in ByteTrack
+DETECT_CONF = 0.4                          # confidence floor for a STORED detection
+
+# ------------------------------------------------------------------
+# Tracking stability (CCTV-tuned)
+# ------------------------------------------------------------------
+# ByteTrack config tuned for sampled CCTV (see the yaml for the reasoning).
+# Falls back to the ultralytics built-in if the file is ever missing.
+_CCTV_TRACKER = Path(__file__).resolve().parent / "ingestion" / "trackers" / "bytetrack_cctv.yaml"
+TRACKER_CFG = str(_CCTV_TRACKER) if _CCTV_TRACKER.exists() else "bytetrack.yaml"
+
+# Confidence handed to YOLO for the TRACKING pass. Lower than DETECT_CONF on
+# purpose: ByteTrack's second association stage needs low-score boxes to carry a
+# track through occlusion. Detections are still filtered to DETECT_CONF before
+# anything is stored, so the database and search results keep the same quality
+# floor as before.
+TRACK_INPUT_CONF = 0.15
+
+# --- Appearance-assisted association (identity_guard) ---
+TRACK_APPEARANCE_GUARD = True     # verify every ByteTrack association with ReID
+# A detection may only extend a track if it looks like that track's stored
+# appearance at least this much. Below it the association is REFUSED rather than
+# allowed to overwrite the identity. Swept in scripts/benchmark_tracking.py.
+TRACK_REID_MIN_SIM = 0.62
+# The detection must ALSO still look like the track's most recent confirmed view.
+# The view set alone is too forgiving: after a track has accumulated several poses
+# it can contain a decent match for two different people, and an identity hand-over
+# only shows clearly frame-to-frame. Set to 0.0 to disable this second test.
+TRACK_REID_RECENT_MIN = 0.55
+# Re-acquiring a track that was lost needs stronger evidence than continuing one.
+TRACK_REACQUIRE_MIN_SIM = 0.72
+# How long (in SAMPLED frames) a lost track stays eligible for re-acquisition.
+# 90 frames = ~45 s at the default 2 fps, matching track_buffer in the yaml.
+TRACK_LOST_WINDOW = 90
+# Representative embeddings kept per live track (Part 6). More views = more
+# posture/lighting coverage when re-acquiring or matching across cameras.
+TRACK_MAX_EMBEDDINGS = 8
+# A track must be seen this many times before its appearance is trusted enough to
+# reject an association; one noisy first crop should not lock a track down.
+TRACK_GUARD_WARMUP = 2
 
 # --- Detection responsibility split (India-vehicle redesign) ---
 # COCO YOLOv10 is redesigned to own only PEOPLE + GENERAL OBJECTS (person, bicycle,

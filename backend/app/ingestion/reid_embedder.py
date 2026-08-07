@@ -34,10 +34,23 @@ def get_extractor():
     return _extractor
 
 
+def _as_rgb(img):
+    """torchreid reads a file path as RGB but wraps a raw ndarray with
+    Image.fromarray, which assumes it is ALREADY RGB. Every in-memory crop in this
+    project comes from OpenCV and is therefore BGR, so passing one straight
+    through would embed a channel-swapped person and quietly degrade re-ID
+    (measured: cosine 0.90 against the same crop read from disk). Arrays are
+    converted here so a path and an in-memory crop give the same embedding."""
+    if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[2] == 3:
+        return img[:, :, ::-1].copy()
+    return img
+
+
 def embed_persons(images, batch_size: int = 32) -> np.ndarray:
-    """Encode person crops (paths or ndarrays) -> [N, 512] float32, normalised."""
+    """Encode person crops (paths, or OpenCV BGR ndarrays) -> [N, 512] normalised."""
     if not images:
         return np.zeros((0, config.REID_DIM), dtype="float32")
+    images = [_as_rgb(im) for im in images]
     ext = get_extractor()
     out = []
     for i in range(0, len(images), batch_size):

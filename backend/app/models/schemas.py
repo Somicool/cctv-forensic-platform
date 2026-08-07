@@ -116,6 +116,11 @@ class TrackPathPoint(BaseModel):
     timestamp: Optional[str] = None
     bbox: list[float]                            # [x, y, w, h] in native pixels
     confidence: Optional[float] = None
+    # True when the detector missed this person here (occlusion, blur, low score)
+    # and the box was interpolated from the surrounding sightings, so the overlay
+    # stays attached to the target instead of blinking out. Additive field:
+    # existing clients that ignore it behave exactly as before.
+    predicted: bool = False
 
 
 class TrackPathResponse(BaseModel):
@@ -136,6 +141,10 @@ class TrackPathResponse(BaseModel):
     avg_confidence: Optional[float] = None
     attributes: dict = Field(default_factory=dict)
     points: list[TrackPathPoint]                 # per-frame boxes, time-ordered
+    # Additive diagnostics for identity-preserving playback.
+    detected_points: Optional[int] = None        # boxes backed by a real detection
+    predicted_points: Optional[int] = None       # boxes interpolated across gaps
+    identity_confidence: Optional[float] = None  # mean ReID similarity to the click
 
 
 # ----------------------------- Ingestion ---------------------------

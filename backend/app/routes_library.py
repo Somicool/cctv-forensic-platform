@@ -80,20 +80,32 @@ def library_route():
 
 
 @router.post("/ingest/all")
-def ingest_all_route(mode: str | None = None):
+def ingest_all_route(mode: str | None = None, force: bool = False):
     """Process every unprocessed video in the folder (one sequential background job).
-    Optional `mode` ("fast" default | "accurate"); None -> config.PROCESSING_MODE."""
+
+    Optional `mode` ("fast" default | "accurate"); None -> config.PROCESSING_MODE.
+
+    `force=true` ALSO re-processes clips already marked done, discarding their old
+    analysis first. Without it, an already-processed clip is skipped - which means
+    an improvement to detection or tracking has no effect on existing footage until
+    it is deliberately re-processed. Prefer /ingest/reprocess for named clips.
+    """
     if ingest_jobs.has_running_job():
         return {"job_id": None, "total": 0, "busy": True,
                 "message": "Another job is already running - wait for it to finish."}
     from .ingestion import pipeline
-    done = {v["filename"] for v in database.list_videos() if v.get("status") == "done"}
+    done = (set() if force else
+            {v["filename"] for v in database.list_videos() if v.get("status") == "done"})
     files = ([p for p in sorted(config.VIDEO_DIR.iterdir())
               if p.suffix.lower() in _VIDEO_EXTS and p.name not in done
               and not _has_mp4_twin(p)]         # don't re-ingest a source whose .mp4 exists
              if config.VIDEO_DIR.exists() else [])
     if not files:
-        return {"job_id": None, "total": 0, "message": "All videos are already processed."}
+        return {"job_id": None, "total": 0,
+                "message": ("All videos are already processed. Re-processing an existing "
+                            "clip (for example after a tracking improvement) needs "
+                            "force=true, or POST /ingest/reprocess with the filenames."),
+                "hint": "force=true"}
 
     job_id = ingest_jobs.new_job(f"{len(files)} video(s)")
     ingest_jobs.update(job_id, status="processing", total=len(files), done=0, current=files[0].name)
@@ -109,6 +121,15 @@ def ingest_all_route(mode: str | None = None):
             ingest_progress.reset()               # new video -> reset the per-video bar
             ingest_jobs.update(job_id, status="processing", current=f.name, done=i)
             try:
+                if force:
+                    # discard the previous analysis first, keeping the source file,
+                    # and re-register the clip with its ORIGINAL camera and start
+                    # time so timestamps, journeys and camera history still line up
+                    prev = purge_video_data(f.name, delete_file=False).get("previous") or {}
+                    pipeline.ingest_video(f, camera_id=prev.get("camera_id"),
+                                          start_time=prev.get("start_time"),
+                                          fps=prev.get("fps"), mode=mode)
+                    continue
                 pipeline.ingest_video(f, mode=mode)
             except Exception as exc:  # noqa: BLE001 - keep going, report per file
                 if ingest_jobs.stop_requested():   # the exception was our stop signal
@@ -122,6 +143,85 @@ def ingest_all_route(mode: str | None = None):
 
     threading.Thread(target=run, daemon=True).start()
     return {"job_id": job_id, "total": len(files), "files": [f.name for f in files]}
+
+
+@router.post("/ingest/reprocess")
+def ingest_reprocess_route(payload: dict | None = None):
+    """Re-run the full pipeline over clips that were ALREADY processed.
+
+    Detection, tracking and re-ID results are computed once, at ingestion, and
+    everything downstream (search, Track Person, journeys) replays that stored
+    output. So improving the tracker changes nothing for footage that was ingested
+    with the older code until that footage is re-processed - this is the endpoint
+    that does it.
+
+    Body: {"filenames": ["test1.mp4", ...]} or {"cameras": ["test1", ...]}
+          or {"all": true}, plus optional {"mode": "fast"|"accurate"}.
+
+    Each clip keeps its original camera_id, start_time and fps, so timestamps and
+    journeys stay valid. The source video is never deleted, only its analysis.
+    """
+    if ingest_jobs.has_running_job():
+        return {"job_id": None, "busy": True,
+                "message": "Another job is already running - wait for it to finish."}
+    payload = payload or {}
+    videos = database.list_videos()
+    names: list[str] = []
+    if payload.get("all"):
+        names = [v["filename"] for v in videos]
+    else:
+        want_files = {Path(str(f)).name for f in (payload.get("filenames") or [])}
+        want_cams = set(payload.get("cameras") or [])
+        for v in videos:
+            if v["filename"] in want_files or v.get("camera_id") in want_cams:
+                names.append(v["filename"])
+    # de-duplicate, keep only clips whose source file is still on disk
+    seen, targets = set(), []
+    for n in names:
+        if n in seen:
+            continue
+        seen.add(n)
+        p = config.VIDEO_DIR / n
+        if p.exists():
+            targets.append(p)
+    if not targets:
+        raise HTTPException(status_code=400,
+                            detail="No matching processed videos found on disk. "
+                                   "Pass filenames, cameras or all=true.")
+
+    from .ingestion import pipeline
+    mode = payload.get("mode")
+    job_id = ingest_jobs.new_job(f"reprocess {len(targets)} video(s)")
+    ingest_jobs.update(job_id, status="processing", total=len(targets), done=0,
+                       current=targets[0].name)
+    ingest_jobs.clear_stop()
+
+    def run():
+        stopped, i = False, 0
+        for i, f in enumerate(targets):
+            if ingest_jobs.stop_requested():
+                stopped = True
+                break
+            ingest_progress.reset()
+            ingest_jobs.update(job_id, status="processing", current=f.name, done=i)
+            try:
+                prev = purge_video_data(f.name, delete_file=False).get("previous") or {}
+                pipeline.ingest_video(f, camera_id=prev.get("camera_id"),
+                                      start_time=prev.get("start_time"),
+                                      fps=prev.get("fps"), mode=mode)
+            except Exception as exc:  # noqa: BLE001 - keep going, report per file
+                if ingest_jobs.stop_requested():
+                    stopped = True
+                    break
+                ingest_jobs.update(job_id, last_error=f"{f.name}: {exc}")
+        ingest_jobs.clear_stop()
+        ingest_progress.reset()
+        ingest_jobs.update(job_id, status="stopped" if stopped else "done",
+                           done=(i if stopped else len(targets)), current=None)
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"job_id": job_id, "total": len(targets),
+            "files": [f.name for f in targets], "mode": mode or "default"}
 
 
 @router.post("/ingest/upload")
@@ -181,29 +281,32 @@ async def ingest_upload_route(file: UploadFile = File(...),
     return {"job_id": job_id, "filename": fname, "total": 1, "mode": run_mode}
 
 
-@router.post("/videos/delete")
-def delete_video_route(payload: dict):
-    """Permanently delete a video: its file(s) on disk, its DB rows (detections,
-    tracks, faces, plates, videos), its FAISS vectors, and its crops/frames.
-    Body: {"filename": "<name in videos dir>"}. Refuses while a job is running."""
-    if ingest_jobs.has_running_job():
-        raise HTTPException(status_code=409, detail="A processing job is running - try again once it finishes.")
+def purge_video_data(fname: str, delete_file: bool = True) -> dict:
+    """Remove everything derived from one clip: DB rows, FAISS vectors, crops and
+    frames. `delete_file=False` keeps the source video on disk, which is what
+    re-processing needs - the analysis is thrown away, the evidence is not.
 
-    fname = Path((payload or {}).get("filename") or "").name   # strip any path
-    if not fname:
-        raise HTTPException(status_code=400, detail="filename is required")
-    vdir = config.VIDEO_DIR.resolve()
-
+    Also returns the previous camera_id / start_time / fps so a re-process can
+    re-register the clip with the SAME identity and timeline. Losing those would
+    silently break journeys and cross-camera timing."""
     from .search import vector_store
+    import shutil
+
+    vdir = config.VIDEO_DIR.resolve()
     removed = {"clip": 0, "reid": 0, "face": 0}
     video_ids, cameras = [], set()
+    prev = None
 
     with database.get_conn() as conn:
-        rows = conn.execute("SELECT video_id, camera_id FROM videos WHERE filename=?", (fname,)).fetchall()
+        rows = conn.execute("SELECT video_id, camera_id, start_time, fps FROM videos "
+                            "WHERE filename=?", (fname,)).fetchall()
         for r in rows:
             video_ids.append(r["video_id"])
             if r["camera_id"]:
                 cameras.add(r["camera_id"])
+            if prev is None:
+                prev = {"camera_id": r["camera_id"], "start_time": r["start_time"],
+                        "fps": r["fps"]}
         for vid in video_ids:
             det_ids = [x["detection_id"] for x in
                        conn.execute("SELECT detection_id FROM detections WHERE video_id=?", (vid,)).fetchall()]
@@ -221,28 +324,44 @@ def delete_video_route(payload: dict):
                          "(SELECT detection_id FROM detections WHERE video_id=?)", (vid,))
             conn.execute("DELETE FROM detections WHERE video_id=?", (vid,))
             conn.execute("DELETE FROM tracks WHERE video_id=?", (vid,))
+            conn.execute("DELETE FROM track_identity WHERE video_id=?", (vid,))
             conn.execute("DELETE FROM videos WHERE video_id=?", (vid,))
     if video_ids:
         vector_store.save()
 
-    # ---- disk cleanup (guarded to the data dirs) ----
-    import shutil
     stem = Path(fname).stem
     deleted_files = []
-    # the requested file + any same-stem source of another extension (transcode leftovers)
-    for p in vdir.glob(stem + ".*"):
-        if p.suffix.lower() in _VIDEO_EXTS and p.resolve().parent == vdir:
-            try: p.unlink(); deleted_files.append(p.name)
-            except OSError: pass
-    # crops + frames for this clip (per camera/<stem>)
+    if delete_file:
+        for p in vdir.glob(stem + ".*"):
+            if p.suffix.lower() in _VIDEO_EXTS and p.resolve().parent == vdir:
+                try:
+                    p.unlink()
+                    deleted_files.append(p.name)
+                except OSError:
+                    pass
     for cam in (cameras or [None]):
         for root in (config.CROP_DIR, config.FRAME_DIR):
             d = (root / cam / stem) if cam else None
             if d and d.exists():
                 shutil.rmtree(d, ignore_errors=True)
 
-    return {"deleted": True, "filename": fname, "video_ids": video_ids,
-            "files_removed": deleted_files, "vectors_removed": removed}
+    return {"filename": fname, "video_ids": video_ids, "files_removed": deleted_files,
+            "vectors_removed": removed, "previous": prev}
+
+
+@router.post("/videos/delete")
+def delete_video_route(payload: dict):
+    """Permanently delete a video: its file(s) on disk, its DB rows (detections,
+    tracks, faces, plates, videos), its FAISS vectors, and its crops/frames.
+    Body: {"filename": "<name in videos dir>"}. Refuses while a job is running."""
+    if ingest_jobs.has_running_job():
+        raise HTTPException(status_code=409, detail="A processing job is running - try again once it finishes.")
+
+    fname = Path((payload or {}).get("filename") or "").name   # strip any path
+    if not fname:
+        raise HTTPException(status_code=400, detail="filename is required")
+    res = purge_video_data(fname, delete_file=True)
+    return {"deleted": True, **res}
 
 
 @router.post("/ingest/stop")
