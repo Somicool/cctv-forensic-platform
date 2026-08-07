@@ -47,3 +47,6 @@ export const IcFace = ({ size = 20 }) => (
 export const IcJourney = ({ size = 20 }) => (
   <svg {...base(size)}><circle cx="6" cy="7" r="2.5" /><circle cx="18" cy="17" r="2.5" /><path d="M6 9.5v3a3 3 0 0 0 3 3h3a3 3 0 0 1 3 3v-2.5" strokeDasharray="3 2.5" /></svg>
 )
+export const IcCamera = ({ size = 20 }) => (
+  <svg {...base(size)}><path d="M3 8h11l4 3v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M18 11l3-2v8l-3-2" /><circle cx="8.5" cy="13.5" r="2" /></svg>
+)

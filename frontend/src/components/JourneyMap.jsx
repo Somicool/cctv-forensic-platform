@@ -11,6 +11,11 @@ export default function JourneyMap({ journey, geo, onSelect, activeIdx }) {
   const [hover, setHover] = useState(null)
   const nodes = journey?.nodes || []
   const legs = journey?.legs || []
+  // A real route is only drawn when the route engine returns one. Straight lines
+  // between cameras are intentionally NOT drawn - they would misrepresent the
+  // actual path taken. See app/routing.py.
+  const route = journey?.route || {}
+  const routeReady = !!(route.available && (route.geometry || []).length > 1)
 
   const { pts, hasGps } = useMemo(() => {
     const coords = nodes.map((n) => {
@@ -57,18 +62,17 @@ export default function JourneyMap({ journey, geo, onSelect, activeIdx }) {
         </defs>
         <rect width={W} height={H} fill="url(#jn-grid)" />
 
-        {/* travel polyline, per leg so implausible ones can be styled */}
-        {pts.slice(0, -1).map((p, i) => {
-          const q = pts[i + 1], leg = legs[i] || {}
-          const bad = leg.plausible === false
-          return (
-            <line key={i} x1={p.x} y1={p.y} x2={q.x} y2={q.y}
-                  stroke={bad ? '#ff6b76' : 'var(--fp-accent)'}
-                  strokeWidth={bad ? 2 : 2.6}
-                  strokeDasharray={bad || leg.mode === 'overlap' ? '7 5' : undefined}
-                  markerEnd="url(#jn-arrow)" opacity={bad ? 0.75 : 0.95} />
-          )
-        })}
+        {/* Route overlay: ONLY drawn from a real routing-engine geometry.
+            No straight-line fallback (see routing.py NullRouteEngine). */}
+        {routeReady && (
+          <polyline points={pts.map((p) => `${p.x},${p.y}`).join(' ')} fill="none"
+                    stroke="var(--fp-accent)" strokeWidth="2.6" markerEnd="url(#jn-arrow)" />
+        )}
+        {!routeReady && pts.length > 1 && (
+          <text x={W / 2} y={26} textAnchor="middle" className="jn-leg-t">
+            route overlay unavailable — camera locations / routing engine required
+          </text>
+        )}
 
         {/* leg labels (time / distance / mode) */}
         {pts.slice(0, -1).map((p, i) => {
@@ -104,8 +108,10 @@ export default function JourneyMap({ journey, geo, onSelect, activeIdx }) {
         })}
       </svg>
       <div className="jn-map-foot">
-        {hasGps ? 'Geographic view (camera GPS)'
-          : 'Sequence view — assign GPS to these cameras in Settings to enable distance, speed and the geographic map.'}
+        {journey?.map_notice
+          ? <span className="jn-map-warn">⚠ {journey.map_notice}</span>
+          : (hasGps ? `Geographic view (camera GPS) · route engine: ${route.provider || 'none'}`
+            : 'Sequence view — add camera locations in the Camera Registry to enable the geographic map, distance and speed.')}
       </div>
     </div>
   )

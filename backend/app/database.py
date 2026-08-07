@@ -155,6 +155,24 @@ CREATE TABLE IF NOT EXISTS track_best_face (
     PRIMARY KEY (video_id, track_id)
 );
 
+-- Track Identity Descriptors: one permanent multi-view identity record per
+-- completed ByteTrack person track (see app/track_identity.py).
+CREATE TABLE IF NOT EXISTS track_identity (
+    video_id      INTEGER,
+    track_id      INTEGER,
+    camera_id     TEXT,
+    n_detections  INTEGER,
+    n_views       INTEGER,
+    first_seen    TEXT,
+    last_seen     TEXT,
+    meta          TEXT,
+    reid_vecs     TEXT,
+    clip_vecs     TEXT,
+    face_vecs     TEXT,
+    created_at    TEXT,
+    PRIMARY KEY (video_id, track_id)
+);
+
 -- Reconstructed cross-camera journeys, stored permanently per investigation.
 -- Full result (nodes/legs/alternatives) is kept as JSON; see app/journey.py.
 CREATE TABLE IF NOT EXISTS journeys (
@@ -227,6 +245,15 @@ def _migrate(conn) -> None:
                       ("quality_metrics", "TEXT")):
         if col not in scols:
             conn.execute(f"ALTER TABLE saved_faces ADD COLUMN {col} {decl}")
+    # Camera Registry: siting details needed for real journey reconstruction.
+    ccols = {r["name"] for r in conn.execute("PRAGMA table_info(cameras)").fetchall()}
+    for col, decl in (("address", "TEXT"), ("road_name", "TEXT"),
+                      ("facing_deg", "REAL"), ("fov_deg", "REAL"),
+                      ("coverage_m", "REAL"), ("description", "TEXT"),
+                      ("active", "INTEGER DEFAULT 1"), ("source", "TEXT"),
+                      ("updated_at", "TEXT")):
+        if col not in ccols:
+            conn.execute(f"ALTER TABLE cameras ADD COLUMN {col} {decl}")
 
 
 def init_db() -> None:
@@ -255,12 +282,15 @@ def init_db() -> None:
                 )
             # Drop stale cameras that aren't configured and have no footage
             # (e.g. removed demo entries), so the UI never shows empty cameras.
+            # Cameras created/edited through the Camera Registry (source='registry')
+            # are PERMANENT and never dropped, even before any video is uploaded.
             config_ids = [c["camera_id"] for c in cams]
             if config_ids:
                 ph = ",".join("?" * len(config_ids))
                 conn.execute(
                     f"DELETE FROM cameras WHERE camera_id NOT IN ({ph}) AND camera_id NOT IN "
-                    "(SELECT DISTINCT camera_id FROM videos WHERE camera_id IS NOT NULL)",
+                    "(SELECT DISTINCT camera_id FROM videos WHERE camera_id IS NOT NULL) "
+                    "AND COALESCE(source,'') <> 'registry'",
                     config_ids,
                 )
 

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getLibrary, getVideos, getCameras, ingestAll, getIngestJob, stopIngest, uploadVideo,
   deleteVideo, searchText, searchPlate, trackDetection, createExport, logActivity, saveFace,
-  getFaceForDetection, reconstructJourney,
+  getFaceForDetection, reconstructJourney, listCameraRegistry, saveRegistryCamera,
 } from '../api'
 import { useNavigate } from 'react-router-dom'
 import VideoPlayer from '../components/VideoPlayer'
@@ -88,6 +88,7 @@ export default function Workspace() {
   const [regPlate, setRegPlate] = useState(null)       // plate whose Vehicle Registry is open
   const [toast, setToast] = useState(null)             // transient status toast
   const [journeyFor, setJourneyFor] = useState(null)   // person awaiting journey scope choice
+  const [pendingFile, setPendingFile] = useState(null) // upload awaiting camera assignment
   const navigate = useNavigate()
   const [footageOpen, setFootageOpen] = useState(true)
 
@@ -136,11 +137,11 @@ export default function Workspace() {
       await loadLibrary()
     } catch (e) { setError('Delete failed. ' + (e?.response?.data?.detail || e.message || '')) }
   }
-  async function handleUpload(f) {
+  async function handleUpload(f, cameraId) {
     if (!f) return
     setError(null); setUploadPct(0)
     try {
-      const r = await uploadVideo({ file: f, onProgress: setUploadPct })
+      const r = await uploadVideo({ file: f, cameraId, onProgress: setUploadPct })
       setUploadPct(null)
       if (r.busy) { setError(r.message || 'Another job is running — wait for it to finish.'); return }
       if (r.job_id) { autoOpenRef.current = true; setJob({ job_id: r.job_id, status: 'processing', done: 0, total: 1, current: r.filename }) }
@@ -286,7 +287,7 @@ export default function Workspace() {
 
   return (
     <div className="fp-page">
-      <input ref={fileRef} type="file" accept="video/*" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; handleUpload(f) }} />
+      <input ref={fileRef} type="file" accept="video/*" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) setPendingFile(f) }} />
 
       <div className="fp-page-head">
         <div className="ws-head-row">
@@ -547,7 +548,111 @@ export default function Workspace() {
       {journeyFor && <JourneyScope item={journeyFor} cameras={cameras}
         onClose={() => setJourneyFor(null)} onRun={runJourney} />}
 
+      {pendingFile && <CameraAssign file={pendingFile}
+        onClose={() => setPendingFile(null)}
+        onGo={(camId) => { const f = pendingFile; setPendingFile(null); handleUpload(f, camId) }} />}
+
       {toast && <div className="ws-toast">{toast}</div>}
+    </div>
+  )
+}
+
+/* ------------------- Camera assignment for a new upload -------------------
+   Every video is linked to exactly one Camera ID. Pick an already-registered
+   camera (coordinates are never asked twice) or register this camera once, with
+   its location + siting details, and reuse it for all future uploads. If the
+   video itself carries GPS metadata the backend auto-matches the camera. */
+function CameraAssign({ file, onClose, onGo }) {
+  const [cams, setCams] = useState(null)
+  const [mode, setMode] = useState('existing')      // 'existing' | 'new'
+  const [sel, setSel] = useState('')
+  const [nc, setNc] = useState({ camera_id: '', name: '', lat: '', lon: '', address: '',
+                                 road_name: '', facing: '', coverage_m: '' })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    listCameraRegistry().then((r) => {
+      setCams(r || [])
+      if (!(r || []).length) setMode('new')
+      else setSel(r[0].camera_id)
+    }).catch(() => setCams([]))
+  }, [])
+  useEffect(() => { const esc = (e) => { if (e.key === 'Escape') onClose() }; window.addEventListener('keydown', esc); return () => window.removeEventListener('keydown', esc) }, [onClose])
+
+  async function go() {
+    setErr(null)
+    if (mode === 'existing') {
+      if (!sel) { setErr('Choose a camera.'); return }
+      onGo(sel); return
+    }
+    if (!nc.camera_id.trim()) { setErr('Camera ID is required.'); return }
+    setBusy(true)
+    try { await saveRegistryCamera({ ...nc, active: true }); onGo(nc.camera_id.trim()) }
+    catch (e) { setErr(e?.response?.data?.detail || e.message || 'Could not save camera') }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div className="ws-overlay" onMouseDown={onClose}>
+      <div className="ws-modal" style={{ maxWidth: 600 }} onMouseDown={(e) => e.stopPropagation()}>
+        <button className="ws-modal-x" onClick={onClose}>×</button>
+        <h3>Which camera recorded this?</h3>
+        <p className="muted small" style={{ marginTop: -6 }}>
+          {file?.name} — every video is linked to one camera. GPS is read from the video
+          automatically when present; CCTV exports usually have none, so it is entered once here.
+        </p>
+        <div className="jn-scope">
+          <button className={'st-mode ' + (mode === 'existing' ? 'on' : '')}
+                  onClick={() => setMode('existing')} disabled={!(cams || []).length}>Existing camera</button>
+          <button className={'st-mode ' + (mode === 'new' ? 'on' : '')} onClick={() => setMode('new')}>Register new camera</button>
+        </div>
+        {err && <div className="cf-alert err" style={{ marginTop: 12 }}>{err}</div>}
+
+        {mode === 'existing' ? (
+          <div className="ws-fld" style={{ marginTop: 12 }}>
+            <label>Camera</label>
+            <select className="eg-select" value={sel} onChange={(e) => setSel(e.target.value)}>
+              {(cams || []).map((c) => (
+                <option key={c.camera_id} value={c.camera_id}>
+                  {c.camera_id}{c.name && c.name !== c.camera_id ? ` — ${c.name}` : ''}{c.has_gps ? ' (GPS)' : ' (no location)'}
+                </option>))}
+            </select>
+          </div>
+        ) : (
+          <>
+            <div className="st-2col" style={{ marginTop: 12 }}>
+              <div className="ws-fld"><label>Camera ID *</label>
+                <input value={nc.camera_id} onChange={(e) => setNc({ ...nc, camera_id: e.target.value })} placeholder="CAM-07" /></div>
+              <div className="ws-fld"><label>Camera name</label>
+                <input value={nc.name} onChange={(e) => setNc({ ...nc, name: e.target.value })} placeholder="Station Road North" /></div>
+              <div className="ws-fld"><label>Latitude</label>
+                <input value={nc.lat} onChange={(e) => setNc({ ...nc, lat: e.target.value })} placeholder="21.1959" /></div>
+              <div className="ws-fld"><label>Longitude</label>
+                <input value={nc.lon} onChange={(e) => setNc({ ...nc, lon: e.target.value })} placeholder="72.8302" /></div>
+            </div>
+            <div className="ws-fld"><label>Address (optional)</label>
+              <input value={nc.address} onChange={(e) => setNc({ ...nc, address: e.target.value })} placeholder="Nr. Delhi Gate" /></div>
+            <div className="st-2col">
+              <div className="ws-fld"><label>Road name (optional)</label>
+                <input value={nc.road_name} onChange={(e) => setNc({ ...nc, road_name: e.target.value })} placeholder="Ring Road" /></div>
+              <div className="ws-fld"><label>Facing</label>
+                <select className="eg-select" value={nc.facing} onChange={(e) => setNc({ ...nc, facing: e.target.value })}>
+                  <option value="">—</option>
+                  {['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'].map((f) => <option key={f} value={f}>{f}</option>)}
+                </select></div>
+            </div>
+            <div className="ws-fld"><label>Coverage distance (m)</label>
+              <input value={nc.coverage_m} onChange={(e) => setNc({ ...nc, coverage_m: e.target.value })} placeholder="45" /></div>
+            <div className="st-hint">Saved permanently to the Camera Registry — you will not be asked again for this camera.</div>
+          </>
+        )}
+
+        <div className="ws-modal-actions" style={{ marginTop: 14 }}>
+          <button className="fp-btn" onClick={onClose}>Cancel</button>
+          <button className="fp-btn primary" onClick={go} disabled={busy}>Upload &amp; analyse</button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -172,6 +172,52 @@ export async function findSimilarFaces(savedId, topK = 60) {
   return data
 }
 
+// ---- Camera Registry ----
+export async function listCameraRegistry() {
+  const { data } = await api.get('/camera-registry')
+  return data
+}
+
+export async function getRegistryStatus() {
+  const { data } = await api.get('/camera-registry/status')
+  return data
+}
+
+export async function getRegistryCamera(cameraId) {
+  const { data } = await api.get(`/camera-registry/${encodeURIComponent(cameraId)}`)
+  return data
+}
+
+export async function saveRegistryCamera(cam) {
+  const { data } = await api.post('/camera-registry', cam)
+  return data
+}
+
+export async function deleteRegistryCamera(cameraId, force = false) {
+  const { data } = await api.delete(`/camera-registry/${encodeURIComponent(cameraId)}?force=${force}`)
+  return data
+}
+
+export async function exportCameraRegistry() {
+  const { data } = await api.get('/camera-registry/export')
+  return data
+}
+
+export async function importCameraRegistry(cameras, replace = false) {
+  const { data } = await api.post('/camera-registry/import', { cameras, replace })
+  return data
+}
+
+export async function probeVideoGps(filename) {
+  const { data } = await api.get(`/video-gps/${encodeURIComponent(filename)}`)
+  return data
+}
+
+export async function getRouteEngine() {
+  const { data } = await api.get('/route-engine')
+  return data
+}
+
 // ---- Journey Reconstruction ----
 export async function reconstructJourney({ detectionId, cameras, investigation }) {
   const { data } = await api.post('/journey/reconstruct', {
@@ -192,6 +238,22 @@ export async function getJourney(journeyId) {
 
 export async function deleteJourney(journeyId) {
   const { data } = await api.delete(`/journeys/${journeyId}`)
+  return data
+}
+
+// fmt: 'json' (full) | 'summary' (report) | 'geojson' (map data)
+export async function exportJourneyApi(journeyId, fmt = 'json') {
+  const { data } = await api.get(`/journeys/${journeyId}/export?fmt=${encodeURIComponent(fmt)}`)
+  return data
+}
+
+export async function journeyToCaseFile(journeyId, investigation, note) {
+  const { data } = await api.post(`/journeys/${journeyId}/case-file`, { investigation, note })
+  return data
+}
+
+export async function getRouteProviders() {
+  const { data } = await api.get('/journey/route-providers')
   return data
 }
 

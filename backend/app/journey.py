@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from datetime import datetime
 
 import numpy as np
 
-from . import config, database
+from . import (config, database, camera_registry, journey_engine, routing,
+               track_identity, track_match)
 from .search import vector_store
 from .search.text_search import media_url, _camera_names, _video_index, playback_fields
 
@@ -133,13 +135,8 @@ def _face_emb_for_track(video_id, track_id):
 
 
 def _mode_from_speed(kmh) -> str:
-    if kmh is None:
-        return "unknown"
-    if kmh <= WALK_KMH:
-        return "walking"
-    if kmh <= CYCLE_KMH:
-        return "two-wheeler"
-    return "vehicle"
+    """Backward-compatible shim - the Journey Engine owns mode inference now."""
+    return journey_engine.infer_travel_mode(kmh)["mode"]
 
 
 # ---------------------------------------------------------------- matching
@@ -261,109 +258,162 @@ def _per_camera(appearances: list[dict]) -> list[dict]:
 
 
 def _build_legs(nodes: list[dict], geo: dict) -> tuple[list[dict], list[str]]:
-    """Transitions between consecutive cameras: travel time, GPS distance, speed,
-    inferred mode. Impossible transitions (too fast for the distance) are flagged."""
-    legs, rejects = [], []
-    for a, b in zip(nodes, nodes[1:]):
-        t0, t1 = _parse_ts(a["last_seen"]), _parse_ts(b["first_seen"])
-        dt_s = (t1 - t0).total_seconds() if (t0 and t1) else None
-        ca, cb = geo.get(a["camera_id"]) or {}, geo.get(b["camera_id"]) or {}
-        dist = None
-        if all(v is not None for v in (ca.get("lat"), ca.get("lon"), cb.get("lat"), cb.get("lon"))):
-            dist = round(_haversine_km(ca["lat"], ca["lon"], cb["lat"], cb["lon"]), 4)
-        speed = None
-        if dist is not None and dt_s and dt_s > 0:
-            speed = round(dist / (dt_s / 3600.0), 2)
-        plausible, why = True, "plausible"
-        overlap = dt_s is not None and dt_s < 0
-        if overlap:
-            # seen in the next camera before leaving this one: either overlapping
-            # camera coverage, or (if the cameras are far apart) impossible.
-            if dist is not None and dist > 0.15:
-                plausible = False
-                why = (f"impossible: seen at both cameras simultaneously "
-                       f"({abs(round(dt_s,1))}s overlap, {dist} km apart)")
-            else:
-                why = f"overlapping coverage - simultaneous sighting ({abs(round(dt_s,1))}s overlap)"
-            speed = None
-        elif dist is not None and dt_s is not None:
-            if dt_s == 0 and dist > 0.05:
-                plausible, why = False, "same instant at different locations"
-            elif speed is not None and speed > MAX_KMH:
-                plausible = False
-                why = f"impossible: {dist} km in {round(dt_s/60,1)} min = {speed} km/h (> {MAX_KMH})"
-        elif dist is None:
-            why = "no camera GPS - distance/speed unavailable"
-        leg = {"from_camera": a["camera_id"], "to_camera": b["camera_id"],
-               "from_time": a["last_seen"], "to_time": b["first_seen"],
-               "travel_seconds": round(dt_s, 1) if dt_s is not None else None,
-               "distance_km": dist, "avg_speed_kmh": speed,
-               "mode": ("overlap" if overlap else _mode_from_speed(speed)),
-               "plausible": plausible, "note": why,
-               "evidence": ["reid/face identity"]}
-        # future providers (gps track, anpr, mobile) can enrich each leg here
-        for name, fn in TRANSITION_EVIDENCE.items():
-            try:
-                extra = fn(a, b)
-                if extra:
-                    leg.setdefault("extra", {})[name] = extra
-                    leg["evidence"].append(name)
-            except Exception:
-                pass
-        legs.append(leg)
-        if not plausible:
-            rejects.append(f"{a['camera_id']} -> {b['camera_id']}: {why}")
-    return legs, rejects
+    """Delegates to the Journey Engine, which computes distance, travel time,
+    estimated speed, camera direction and travel mode, and rejects impossible
+    transitions. Kept as a wrapper so existing callers are unaffected."""
+    return journey_engine.build_legs(nodes, geo, TRANSITION_EVIDENCE)
 
 
 def _score_journey(nodes: list[dict], legs: list[dict]) -> float:
-    """Confidence = mean identity strength penalised by implausible transitions
-    and by legs we could not verify (no GPS)."""
-    if not nodes:
-        return 0.0
-    ident = sum(n["identity_score"] for n in nodes) / len(nodes)
-    if not legs:
-        return round(ident, 4)
-    ok = sum(1 for l in legs if l["plausible"]) / len(legs)
-    unverified = sum(1 for l in legs if l["distance_km"] is None) / len(legs)
-    return round(max(0.0, ident * (0.35 + 0.65 * ok) * (1.0 - 0.10 * unverified)), 4)
+    return journey_engine.score(nodes, legs)
 
 
 def _stats(nodes: list[dict], legs: list[dict]) -> dict:
-    dists = [l["distance_km"] for l in legs if l["distance_km"] is not None]
-    # overlapping (negative) legs are not travel time - exclude from totals
-    times = [l["travel_seconds"] for l in legs
-             if l["travel_seconds"] is not None and l["travel_seconds"] > 0]
-    total_km = round(sum(dists), 3) if dists else None
-    total_s = round(sum(times), 1) if times else None
-    avg = round(total_km / (total_s / 3600.0), 2) if (total_km and total_s and total_s > 0) else None
-    t0 = _parse_ts(nodes[0]["first_seen"]) if nodes else None
-    t1 = _parse_ts(nodes[-1]["last_seen"]) if nodes else None
-    return {"cameras": len(nodes), "legs": len(legs),
-            "distance_km": total_km, "travel_seconds": total_s,
-            "avg_speed_kmh": avg,
-            "dwell_seconds": round(sum(n.get("dwell_seconds") or 0 for n in nodes), 1),
-            "span_seconds": round((t1 - t0).total_seconds(), 1) if (t0 and t1) else None,
-            "first_seen": nodes[0]["first_seen"] if nodes else None,
-            "last_seen": nodes[-1]["last_seen"] if nodes else None,
-            "gps_available": bool(dists)}
+    return journey_engine.stats(nodes, legs)
+
+
+UNAVAILABLE_MSG = ("Journey reconstruction unavailable until valid camera "
+                   "locations are configured.")
+
+
+def _route_for(nodes: list[dict], geo: dict) -> dict:
+    """Ask the active route engine for a road-accurate path between the cameras.
+
+    Requires >= 2 cameras with valid GPS in the Camera Registry. When locations
+    are missing - or no routing backend is configured - we return an explicitly
+    UNAVAILABLE result with empty geometry: no misleading straight lines are ever
+    produced."""
+    pts = []
+    for n in nodes:
+        g = geo.get(n["camera_id"]) or {}
+        if g.get("lat") is not None and g.get("lon") is not None:
+            pts.append({"camera_id": n["camera_id"], "lat": float(g["lat"]),
+                        "lon": float(g["lon"])})
+    if len(pts) < 2:
+        return {"available": False, "provider": None, "geometry": [],
+                "reason": UNAVAILABLE_MSG,
+                "cameras_with_gps": len(pts), "cameras_needed": 2}
+    engine = routing.get_engine()
+    res = engine.route(pts, profile="foot").to_dict()
+    res["cameras_with_gps"] = len(pts)
+    if not res.get("available") and not res.get("reason"):
+        res["reason"] = UNAVAILABLE_MSG
+    return res
 
 
 def _journey(nodes: list[dict], geo: dict, label: str) -> dict:
     legs, rejects = _build_legs(nodes, geo)
+    t0 = time.perf_counter()
+    route = _route_for(nodes, geo)
+    route_ms = round((time.perf_counter() - t0) * 1000.0, 2)
     return {"label": label, "nodes": nodes, "legs": legs,
+            # per-camera timeline with the mode used to reach the next camera and
+            # an explicit end state on the final sighting
+            "timeline": journey_engine.build_timeline(nodes, legs),
             "rejected_transitions": rejects,
             "confidence": _score_journey(nodes, legs),
-            "stats": _stats(nodes, legs)}
+            "stats": _stats(nodes, legs),
+            "route": route, "route_ms": route_ms,
+            # the map must not draw a path unless a real route exists
+            "map_ready": bool(route.get("available")),
+            "map_notice": None if route.get("available") else route.get("reason")}
 
 
 # ---------------------------------------------------------------- public API
+def _nodes_from_candidates(match: dict, accept: float) -> list[dict]:
+    """Turn track-level candidates into journey nodes (one per camera)."""
+    nodes = []
+    ref = match["reference"]
+    cam_names = _camera_names()
+    nodes.append({
+        "detection_id": ref.get("detection_id"), "camera_id": ref.get("camera_id"),
+        "camera_name": cam_names.get(ref.get("camera_id")),
+        "timestamp": ref.get("first_seen"),
+        "track_id": ref.get("track_id"), "video_id": ref.get("video_id"),
+        "identity_score": 1.0, "confidence": 1.0, "signals": {"reference": 1.0},
+        "evidence_strength": "reference", "is_reference": True,
+        "first_seen": ref.get("first_seen"), "last_seen": ref.get("last_seen"),
+        "dwell_seconds": 0.0, "sightings": ref.get("n_detections") or 1,
+        "attributes": {"upper_color": ref.get("upper_color"),
+                       "lower_color": ref.get("lower_color"),
+                       "accessories": ref.get("accessories") or []},
+        # vehicle observed WITH the person - travel-mode evidence, never identity
+        "vehicle_context": ref.get("vehicle_context") or [],
+        "travel_method": None, "reasons": ["Reference track"], "alternatives": [],
+    })
+    for c in match.get("best_per_camera", []):
+        # Gate on the IDENTITY score, which is what the threshold sweep in
+        # track_identity calibrated. `confidence` additionally folds in
+        # spatio-temporal plausibility and is used for ranking/display only, so
+        # gating on it would silently shift the calibrated operating point.
+        if c["identity"] < accept or c.get("camera_id") == ref.get("camera_id"):
+            continue                                  # reference camera already added
+        sig = c.get("signals") or {}
+        nodes.append({
+            "detection_id": c.get("detection_id"), "camera_id": c.get("camera_id"),
+            "camera_name": cam_names.get(c.get("camera_id")),
+            "timestamp": c.get("first_seen"),
+            "track_id": c.get("track_id"), "video_id": c.get("video_id"),
+            "identity_score": c["identity"], "confidence": c["confidence"],
+            "tier": c.get("tier"), "signals": sig,
+            # per-source contribution breakdown shown for every confirmed match
+            "fusion": c.get("fusion"), "context": c.get("context"),
+            "evidence_strength": ("face" if "face" in sig else
+                                  ("reid" if "reid" in sig else "appearance-only")),
+            "first_seen": c.get("first_seen"), "last_seen": c.get("last_seen"),
+            "dwell_seconds": 0.0, "sightings": c.get("n_detections") or 1,
+            "attributes": {"upper_color": c.get("upper_color"),
+                           "lower_color": c.get("lower_color"),
+                           "accessories": c.get("accessories") or []},
+            "vehicle_context": c.get("vehicle_context") or [],
+            "travel_method": c.get("travel_method"), "transition": c.get("transition"),
+            "face_pct": c.get("face_pct"), "reid_pct": c.get("reid_pct"),
+            "clothing_pct": c.get("clothing_pct"), "accessories_pct": c.get("accessories_pct"),
+            "body_pct": c.get("body_pct"), "reasons": c.get("reasons") or [],
+            "alternatives": c.get("camera_alternatives") or [],
+        })
+    nodes.sort(key=lambda n: (_parse_ts(n["first_seen"]) or datetime.min))
+    return nodes
+
+
+def _alternative_node(cand: dict) -> dict:
+    """Normalise a runner-up sighting into a journey node.
+
+    Runner-ups arrive in two shapes: track-level candidates from track_match
+    (`identity`, `first_seen`) and legacy detection-level appearances
+    (`identity_score`, `timestamp`). Both are accepted so the alternative-journey
+    scoring never depends on which matcher produced the candidate."""
+    r = dict(cand)
+    ts = r.get("first_seen") or r.get("timestamp")
+    r["timestamp"] = r.get("timestamp") or ts
+    r["first_seen"] = r.get("first_seen") or ts
+    r["last_seen"] = r.get("last_seen") or ts
+    if r.get("identity_score") is None:
+        r["identity_score"] = r.get("identity") or r.get("confidence") or 0.0
+    r.setdefault("dwell_seconds", 0.0)
+    r.setdefault("sightings", r.get("n_detections") or 1)
+    r.setdefault("vehicle_context", [])
+    r["alternatives"] = []
+    return r
+
+
 def reconstruct(detection_id: int, cameras: list[str] | None = None,
-                investigation: str | None = None, persist: bool = True) -> dict:
+                investigation: str | None = None, persist: bool = True,
+                accept: float | None = None, top_k: int = 5) -> dict:
     """Reconstruct the probable journey of the person in `detection_id`.
 
-    cameras=None -> all cameras; otherwise only the given camera ids.
-    Returns the primary journey plus alternatives, each with a confidence."""
+    Uses TRACK-LEVEL identity: the whole ByteTrack track of the reference person
+    is compared, descriptor-to-descriptor, against every candidate track in the
+    selected cameras - so posture/vehicle changes (motorcycle -> walking) no longer
+    break the match. Always returns the top-K candidates, never a bare
+    'no match found'.
+
+    `accept` is the fused-identity score required before a camera is ASSERTED as
+    part of the journey; it defaults to the swept operating point in
+    track_identity.IDENTITY_ACCEPT. Candidates below it are still returned under
+    `matching`, tiered probable / possible / weak, so nothing is hidden."""
+    if accept is None:
+        accept = track_identity.IDENTITY_ACCEPT
     refs = database.get_detections([detection_id])
     if not refs:
         return {"error": "unknown detection"}
@@ -371,11 +421,28 @@ def reconstruct(detection_id: int, cameras: list[str] | None = None,
     if ref.get("class_label") not in _PERSON_LABELS:
         return {"error": "Journey reconstruction applies to a person result."}
 
-    apps = _candidate_appearances(ref, cameras)
     geo = _cam_geo()
-    nodes = _per_camera(apps)
+    vid, tid = ref.get("video_id"), ref.get("track_id")
+    match = None
+    if vid is not None and tid is not None:
+        track_identity.build_all(min_dets=2)                 # idempotent, cheap after first run
+        match = track_match.find_candidates(vid, tid, cameras=cameras, top_k=top_k)
+
+    track_level = bool(match) and not match.get("error")
+    nodes = _nodes_from_candidates(match, accept) if track_level else []
+    # If the track-level path asserted no second camera, fall back to the original
+    # single-detection matcher before giving up - it uses a different (older) route
+    # to the same evidence and occasionally clears its own threshold.
+    if len(nodes) <= 1:
+        legacy = _per_camera(_candidate_appearances(ref, cameras))
+        if len(legacy) > len(nodes):
+            nodes, track_level = legacy, False
     if not nodes:
         return {"error": "No matching appearances found for this person."}
+    # A single node means "only the reference camera is confirmed". That is NOT an
+    # error: the probable candidates below the accept threshold are still returned
+    # under `matching` so the investigator sees the near-misses.
+    confirmed_cameras = len({n.get("camera_id") for n in nodes})
 
     primary = _journey(nodes, geo, "Primary journey")
 
@@ -383,21 +450,17 @@ def reconstruct(detection_id: int, cameras: list[str] | None = None,
     # weakest camera for its runner-up appearance. Each is scored independently.
     alts = []
     if len(nodes) > 2:
-        weakest = min(nodes, key=lambda n: n["identity_score"])
+        weakest = min(nodes, key=lambda n: n.get("identity_score") or 0.0)
         pruned = [n for n in nodes if n is not weakest]
         alt = _journey(pruned, geo, f"Without {weakest['camera_id']} (weakest match)")
         if alt["confidence"] > 0:
             alts.append(alt)
-    weakest = min(nodes, key=lambda n: n["identity_score"])
+    weakest = min(nodes, key=lambda n: n.get("identity_score") or 0.0)
     if weakest.get("alternatives"):
         swapped = []
         for n in nodes:
             if n is weakest:
-                r = dict(weakest["alternatives"][0])
-                r.setdefault("first_seen", r["timestamp"]); r.setdefault("last_seen", r["timestamp"])
-                r.setdefault("dwell_seconds", 0.0); r.setdefault("sightings", 1)
-                r["alternatives"] = []
-                swapped.append(r)
+                swapped.append(_alternative_node(weakest["alternatives"][0]))
             else:
                 swapped.append(n)
         swapped.sort(key=lambda n: (_parse_ts(n["first_seen"]) or datetime.min))
@@ -416,8 +479,27 @@ def reconstruct(detection_id: int, cameras: list[str] | None = None,
         "investigation": investigation,
         "signal_weights": SIGNAL_WEIGHTS,
         "primary": primary, "alternatives": alts[:3],
-        "camera_geo": {k: {"lat": v.get("lat"), "lon": v.get("lon"), "name": v.get("name")}
+        "camera_geo": {k: {"lat": v.get("lat"), "lon": v.get("lon"), "name": v.get("name"),
+                           "address": v.get("address"), "road_name": v.get("road_name"),
+                           "facing_deg": v.get("facing_deg"), "fov_deg": v.get("fov_deg"),
+                           "coverage_m": v.get("coverage_m")}
                        for k, v in geo.items()},
+        "registry": camera_registry.registry_status(),
+        "route_engine": {"active": routing.get_engine().name,
+                         "providers": routing.providers()},
+        # every probable candidate track, with its full reason breakdown, so the
+        # investigator sees near-misses instead of a bare "no match found"
+        "matching": {"mode": "track-level" if track_level else "detection-level",
+                     "accept_threshold": accept,
+                     "probable_threshold": track_identity.IDENTITY_PROBABLE,
+                     "confirmed_cameras": confirmed_cameras,
+                     "status": ("confirmed" if confirmed_cameras > 1 else
+                                "unconfirmed - showing probable candidates only"),
+                     "searched_tracks": (match or {}).get("searched_tracks"),
+                     "compared_tracks": (match or {}).get("compared_tracks"),
+                     "signal_weights": (match or {}).get("signal_weights"),
+                     "candidates": (match or {}).get("candidates", []),
+                     "best_per_camera": (match or {}).get("best_per_camera", [])},
     }
     if persist:
         try:
@@ -468,3 +550,111 @@ def delete_journey(journey_id: int) -> dict:
     with database.get_conn() as conn:
         conn.execute("DELETE FROM journeys WHERE journey_id=?", (journey_id,))
     return {"deleted": journey_id}
+
+
+# ---------------------------------------------------------------- export
+def export_journey(journey_id: int, fmt: str = "json") -> dict | None:
+    """Export a stored journey. Returns None when the journey does not exist."""
+    j = get_journey(journey_id)
+    if j is None:
+        return None
+    primary = j.get("primary") or {}
+    stats = primary.get("stats") or {}
+
+    if fmt == "json":
+        return {"format": "json", "journey_id": journey_id, "journey": j}
+
+    if fmt == "summary":
+        return {
+            "format": "summary", "journey_id": journey_id,
+            "investigation": j.get("investigation"),
+            "reference": j.get("reference"),
+            "confidence": primary.get("confidence"),
+            "statistics": {
+                "total_distance_km": stats.get("distance_km"),
+                "total_time_seconds": stats.get("travel_seconds"),
+                "cameras_visited": stats.get("cameras_visited") or stats.get("cameras"),
+                "average_speed_kmh": stats.get("avg_speed_kmh"),
+                "estimated_transport": stats.get("estimated_transport"),
+                "span_seconds": stats.get("span_seconds"),
+                "gps_available": stats.get("gps_available"),
+                "rejected_transitions": stats.get("rejected_transitions"),
+                "unverified_legs": stats.get("unverified_legs"),
+            },
+            "timeline": primary.get("timeline") or [],
+            "rejected_transitions": primary.get("rejected_transitions") or [],
+            "route": {"available": (primary.get("route") or {}).get("available"),
+                      "provider": (primary.get("route") or {}).get("provider"),
+                      "notice": primary.get("map_notice")},
+            "route_engine": j.get("route_engine"),
+        }
+
+    # geojson: camera markers always; the road path ONLY if a routing engine
+    # produced one. A straight line between cameras is never emitted.
+    geo = j.get("camera_geo") or {}
+    features = []
+    for row in (primary.get("timeline") or []):
+        g = geo.get(row["camera_id"]) or {}
+        if g.get("lat") is None or g.get("lon") is None:
+            continue
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [g["lon"], g["lat"]]},
+            "properties": {"camera_id": row["camera_id"], "camera_name": g.get("name"),
+                           "sequence": row["index"] + 1, "timestamp": row["timestamp"],
+                           "confidence": row.get("confidence"),
+                           "travel_to_next": row.get("next_mode_label"),
+                           "end_state": row.get("end_state"),
+                           "address": g.get("address"), "road_name": g.get("road_name"),
+                           "facing_deg": g.get("facing_deg"), "fov_deg": g.get("fov_deg")},
+        })
+    route = primary.get("route") or {}
+    notice = None
+    if route.get("available") and route.get("geometry"):
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "LineString",
+                         "coordinates": [[lon, lat] for lat, lon in route["geometry"]]},
+            "properties": {"kind": "road_route", "provider": route.get("provider"),
+                           "distance_m": route.get("distance_m"),
+                           "duration_s": route.get("duration_s")},
+        })
+    else:
+        notice = primary.get("map_notice") or UNAVAILABLE_MSG
+    return {"format": "geojson", "journey_id": journey_id,
+            "geojson": {"type": "FeatureCollection", "features": features},
+            "road_route_included": bool(route.get("available") and route.get("geometry")),
+            "notice": notice}
+
+
+def save_to_case_file(journey_id: int, investigation: str | None = None,
+                      note: str | None = None) -> dict:
+    """Seal a journey into the case file, reusing the existing SHA-256 chain of
+    custody: the sighting at every camera becomes an evidence item."""
+    j = get_journey(journey_id)
+    if j is None:
+        return {"error": "journey not found"}
+    primary = j.get("primary") or {}
+    det_ids = [n["detection_id"] for n in (primary.get("nodes") or [])
+               if n.get("detection_id") is not None]
+    if not det_ids:
+        return {"error": "journey has no exportable sightings"}
+    stats = primary.get("stats") or {}
+    case = investigation or j.get("investigation") or "unassigned"
+    summary = (f"Journey #{journey_id}: {stats.get('cameras_visited') or stats.get('cameras')} "
+               f"cameras, {stats.get('distance_km') or 'unknown'} km, "
+               f"transport {stats.get('estimated_transport')}, "
+               f"confidence {primary.get('confidence')}. "
+               f"Modes: {' -> '.join(stats.get('mode_sequence') or []) or 'n/a'}.")
+    from .forensics import create_export
+    from .models.schemas import ExportRequest
+    res = create_export(ExportRequest(
+        detection_ids=det_ids, case_number=case, officer="Journey Engine",
+        notes=" ".join(x for x in (summary, note) if x)))
+    out = res.model_dump() if hasattr(res, "model_dump") else dict(res)
+    out.update({"journey_id": journey_id, "investigation": case,
+                "sightings_sealed": len(det_ids), "summary": summary})
+    database.log_audit("journey_case_file", query_type="journey",
+                       result_count=len(det_ids),
+                       details={"journey_id": journey_id, "export_id": out.get("export_id")})
+    return out

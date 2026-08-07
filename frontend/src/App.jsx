@@ -8,6 +8,7 @@ import Workspace from './pages/Workspace'
 import Evidence from './pages/Evidence'
 import FaceGallery from './pages/FaceGallery'
 import Journey from './pages/Journey'
+import CameraRegistry from './pages/CameraRegistry'
 import CaseFile from './pages/CaseFile'
 import Settings from './pages/Settings'
 
@@ -40,6 +41,7 @@ export default function App() {
               <Route path="/evidence" element={<Evidence />} />
               <Route path="/faces" element={<FaceGallery />} />
               <Route path="/journey" element={<Journey />} />
+              <Route path="/cameras" element={<CameraRegistry />} />
               <Route path="/case" element={<CaseFile />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
