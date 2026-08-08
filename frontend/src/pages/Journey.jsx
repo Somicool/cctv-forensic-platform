@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { listJourneys, getJourney, deleteJourney, exportJourneyApi, journeyToCaseFile } from '../api'
 import { useInvestigation } from '../context/investigation'
 import JourneyMap from '../components/JourneyMap'
+import CameraMap from '../components/CameraMap'
 import VideoPlayer from '../components/VideoPlayer'
 import TrackingViewer from '../components/TrackingViewer'
 import { IcClock } from '../components/icons'
@@ -63,6 +64,31 @@ export default function Journey() {
   const legs = journey?.legs || []
   const st = journey?.stats || {}
   const tl = journey?.timeline || []
+
+  // Cameras for the map: every camera the person was MATCHED at that has stored
+  // coordinates, built from the journey's own camera_geo so the map and the
+  // reconstruction cannot disagree. Cameras without coordinates are passed through
+  // too - the map lists them as unplaceable rather than hiding the omission.
+  const mapCameras = useMemo(() => {
+    const geo = j?.camera_geo || {}
+    const ids = [...new Set(nodes.map((n) => n.camera_id).filter(Boolean))]
+    return ids.map((id) => {
+      const g = geo[id] || {}
+      const has = g.lat != null && g.lon != null
+      return {
+        camera_id: id, name: g.name || id, lat: g.lat, lon: g.lon, has_gps: has,
+        address: g.address, road_name: g.road_name, facing_deg: g.facing_deg,
+        facing: g.facing, fov_deg: g.fov_deg, coverage_m: g.coverage_m,
+        coverage_cone: g.coverage_cone, cone_estimated: g.cone_estimated,
+        active: true, status: has ? 'located' : 'no-location',
+        video_count: g.video_count, investigation_count: g.investigation_count,
+      }
+    }).filter((c) => c.has_gps)
+  }, [j, nodes])
+
+  const mapSequence = useMemo(() => nodes.map((n) => ({
+    camera_id: n.camera_id, label: hhmm(n.first_seen), timestamp: n.first_seen,
+  })), [nodes])
 
   // Server-side export so the file matches what the backend actually stored
   // (per-leg evidence, rejected transitions, and the road route when available).
@@ -253,11 +279,25 @@ export default function Journey() {
                 )}
 
                 <div className="fp-split">
-                  {/* map */}
+                  {/* map - the same OpenStreetMap view as the Camera Registry, so
+                      there is one map implementation for the whole product */}
                   <section className="fp-panel">
                     <div className="fp-panel-title"><span>Movement map</span>
-                      <span className="muted">{st.gps_available ? 'GPS' : 'sequence view'}</span></div>
-                    <JourneyMap journey={journey} geo={j.camera_geo} activeIdx={active} onSelect={setActive} />
+                      <span className="muted">
+                        {mapCameras.length ? 'OpenStreetMap' : 'no located cameras'}
+                      </span></div>
+                    {mapCameras.length > 0 ? (
+                      <CameraMap cameras={mapCameras} route={journey?.route}
+                                 sequence={mapSequence} height={430}
+                                 selected={nodes[active]?.camera_id}
+                                 onSelect={(cid) => {
+                                   const i = nodes.findIndex((n) => n.camera_id === cid)
+                                   if (i >= 0) setActive(i)
+                                 }} />
+                    ) : (
+                      <JourneyMap journey={journey} geo={j.camera_geo}
+                                  activeIdx={active} onSelect={setActive} />
+                    )}
                   </section>
 
                   {/* timeline */}

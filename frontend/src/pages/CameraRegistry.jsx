@@ -8,6 +8,7 @@ import {
   deleteRegistryCamera, exportCameraRegistry, importCameraRegistry,
 } from '../api'
 import { IcSearch } from '../components/icons'
+import CameraMap from '../components/CameraMap'
 
 const FACINGS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 const BLANK = {
@@ -45,10 +46,34 @@ export default function CameraRegistry() {
   }, [cams, q])
 
   async function save() {
-    if (!form.camera_id.trim()) { setErr('Camera ID is required.'); return }
+    // Everything is inside the try: an error thrown BEFORE the request (a bad
+    // field type, for instance) used to reject the handler silently, which looks
+    // exactly like the button not responding at all.
     setBusy(true)
-    try { await saveRegistryCamera(form); setForm(null); await load(); flash('Camera saved permanently') }
-    catch (e) { fail(e) } finally { setBusy(false) }
+    try {
+      const cid = String(form?.camera_id ?? '').trim()
+      if (!cid) { setErr('Camera ID is required.'); return }
+      // Send ONLY the editable fields. The Edit button spreads the whole camera
+      // record into the form, which also carries derived values (facing_deg,
+      // coverage_cone, status, counts). Posting facing_deg back alongside the
+      // edited `facing` dropdown made the backend keep the old direction, so a
+      // changed direction appeared not to save.
+      const str = (v) => (v === null || v === undefined ? '' : String(v))
+      const payload = {
+        camera_id: cid,
+        name: str(form.name), lat: str(form.lat), lon: str(form.lon),
+        address: str(form.address), road_name: str(form.road_name),
+        facing: str(form.facing), fov_deg: str(form.fov_deg),
+        coverage_m: str(form.coverage_m), description: str(form.description),
+        active: !!form.active,
+      }
+      await saveRegistryCamera(payload)
+      setForm(null)
+      await load()
+      flash(`Camera ${cid} saved permanently`)
+    } catch (e) {
+      fail(e)
+    } finally { setBusy(false) }
   }
   async function remove(c) {
     const linked = c.video_count > 0
@@ -112,6 +137,16 @@ export default function CameraRegistry() {
         <Stat v={status?.route_engine?.active ?? '—'} l="Route Engine" />
       </div>
 
+      {/* Every saved camera on an OpenStreetMap basemap, with its viewing cone.
+          Loaded automatically whenever this page opens. */}
+      <section className="fp-panel" style={{ marginBottom: 18 }}>
+        <div className="fp-panel-title">
+          <span>Camera locations</span>
+          <span className="muted">OpenStreetMap · click a marker for full siting details</span>
+        </div>
+        <CameraMap cameras={cams || []} selected={view?.camera_id} onSelect={openView} />
+      </section>
+
       <div className="fp-quicksearch">
         <IcSearch size={20} />
         <input placeholder="Search cameras — ID, name, address, road…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -157,8 +192,13 @@ export default function CameraRegistry() {
 
       {/* add / edit */}
       {form && (
-        <div className="ws-overlay" onMouseDown={() => setForm(null)}>
-          <div className="ws-modal" style={{ maxWidth: 620 }} onMouseDown={(e) => e.stopPropagation()}>
+        // Close only when the backdrop ITSELF is pressed. Relying on the modal to
+        // stopPropagation is fragile: choosing an option in the native Facing
+        // <select> reports a mousedown outside the modal, which closed the form
+        // mid-edit and made the Save button look unresponsive.
+        <div className="ws-overlay"
+             onMouseDown={(e) => { if (e.target === e.currentTarget) setForm(null) }}>
+          <div className="ws-modal ws-modal-tall" style={{ maxWidth: 620 }}>
             <button className="ws-modal-x" onClick={() => setForm(null)}>×</button>
             <h3>{cams?.some((c) => c.camera_id === form.camera_id) ? 'Edit camera' : 'Add camera'}</h3>
             <div className="st-2col">
@@ -190,9 +230,11 @@ export default function CameraRegistry() {
                      onChange={(e) => setForm({ ...form, active: e.target.checked })} />
               <span className="id">Active</span>
             </label>
-            <div className="ws-modal-actions" style={{ marginTop: 12 }}>
-              <button className="fp-btn" onClick={() => setForm(null)}>Cancel</button>
-              <button className="fp-btn primary" onClick={save} disabled={busy}>Save permanently</button>
+            <div className="ws-modal-actions ws-actions-stick" style={{ marginTop: 12 }}>
+              <button type="button" className="fp-btn" onClick={() => setForm(null)}>Cancel</button>
+              <button type="button" className="fp-btn primary" onClick={save} disabled={busy}>
+                {busy ? 'Saving…' : 'Save permanently'}
+              </button>
             </div>
           </div>
         </div>

@@ -885,3 +885,86 @@ body {
   color: var(--fp-muted); font-style: italic;
 }
 .jn-tl-end .jn-tl-basis { font-style: normal; }
+
+/* Camera Registry map (Leaflet / OpenStreetMap) */
+.cm-wrap { display: flex; flex-direction: column; gap: 6px; }
+.cm-map {
+  width: 100%; border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--fp-border); background: #10141d;
+}
+.cm-foot { font-size: 11px; color: var(--fp-muted); }
+.cm-warn { color: var(--fp-warn); }
+/* keep the dark theme readable over OSM tiles */
+.cm-map .leaflet-container { background: #10141d; font: inherit; }
+.cm-map .leaflet-tile-pane { filter: brightness(0.78) saturate(0.85) contrast(1.05); }
+.cm-map .leaflet-popup-content-wrapper, .cm-map .leaflet-popup-tip {
+  background: var(--fp-surface); color: var(--fp-text);
+  border: 1px solid var(--fp-border);
+}
+.cm-pop { font-size: 11px; line-height: 1.5; min-width: 210px; }
+.cm-pop b { display: block; margin-bottom: 4px; font-size: 12px; }
+.cm-pop div { display: flex; justify-content: space-between; gap: 10px; }
+.cm-pop div span { color: var(--fp-muted); }
+.cm-pop i { display: block; margin-top: 5px; color: var(--fp-warn); font-size: 10px; }
+
+/* journey map: possible road routes */
+.jn-map-alts {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 7px 2px 0; font-size: 11px;
+}
+.jn-map-alts b { font-size: 11px; }
+.jn-alt {
+  padding: 2px 8px; border-radius: 999px; font-size: 10px;
+  border: 1px solid var(--fp-border-2); color: var(--fp-muted);
+}
+.jn-alt.on { border-color: var(--fp-accent); color: var(--fp-text); }
+
+/* Tall modals (the camera siting form) must never push their action buttons off
+   screen: the overlay is centred and fixed, so an over-tall modal previously left
+   "Save permanently" unreachable with nothing to scroll. */
+.ws-overlay { overflow-y: auto; }
+.ws-modal-tall {
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* keep the actions visible while the rest of the form scrolls */
+.ws-modal-tall .ws-actions-stick {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--fp-surface);
+  padding-top: 10px;
+  border-top: 1px solid var(--fp-border);
+}
+
+/* map pins: numbered for a journey stop, counted when cameras share a location */
+.cm-pin {
+  display: grid; place-items: center;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: #6ea8ff; color: #08111f;
+  border: 2px solid rgba(255,255,255,.85);
+  box-shadow: 0 2px 6px rgba(0,0,0,.5);
+  font-size: 11px; font-weight: 700; line-height: 1;
+}
+.cm-pin.seq { background: var(--fp-accent); }
+.cm-pin.dim { background: #8b93a7; opacity: .75; width: 20px; height: 20px; font-size: 10px; }
+.cm-pin.on {
+  outline: 3px solid #fff; outline-offset: 1px;
+  width: 30px; height: 30px; font-size: 12px;
+}
+.cm-pop hr { border: none; border-top: 1px solid var(--fp-border); margin: 7px 0; }
+
+/* per-clip "process again" control, beside the delete button on a footage card */
+.ws-fc-again {
+  position: absolute; top: 8px; right: 42px;
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(8,12,20,.85); color: #cfe0ff;
+  border: 1px solid var(--fp-border); cursor: pointer;
+  font-size: 14px; line-height: 1; z-index: 2;
+}
+.ws-fc-again:hover:not(:disabled) {
+  border-color: var(--fp-accent); color: #fff; background: rgba(20,40,70,.95);
+}
+.ws-fc-again:disabled { opacity: .45; cursor: not-allowed; }

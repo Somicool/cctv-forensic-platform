@@ -17,35 +17,53 @@ export default function JourneyMap({ journey, geo, onSelect, activeIdx }) {
   const route = journey?.route || {}
   const routeReady = !!(route.available && (route.geometry || []).length > 1)
 
-  const { pts, hasGps } = useMemo(() => {
+  // One projector shared by the cameras, the road route and the coverage cones, so
+  // everything lands in the same coordinate space and the road geometry actually
+  // fits on screen (the bounds include the route, not just the cameras).
+  const { pts, hasGps, project, routePts, altPts, cones } = useMemo(() => {
     const coords = nodes.map((n) => {
       const g = geo?.[n.camera_id] || {}
-      return (g.lat != null && g.lon != null) ? { lat: g.lat, lon: g.lon } : null
+      return (g.lat != null && g.lon != null) ? { lat: Number(g.lat), lon: Number(g.lon) } : null
     })
     const has = coords.every(Boolean) && coords.length > 1
-    if (has) {
-      const lats = coords.map((c) => c.lat), lons = coords.map((c) => c.lon)
-      const minLat = Math.min(...lats), maxLat = Math.max(...lats)
-      const minLon = Math.min(...lons), maxLon = Math.max(...lons)
-      const spanLat = Math.max(maxLat - minLat, 1e-4), spanLon = Math.max(maxLon - minLon, 1e-4)
+    if (!has) {
+      // no GPS: spread along a time axis (still shows order + gaps)
+      const n = Math.max(nodes.length - 1, 1)
       return {
-        hasGps: true,
-        pts: coords.map((c) => ({
-          x: PAD + ((c.lon - minLon) / spanLon) * (W - PAD * 2),
-          y: H - PAD - ((c.lat - minLat) / spanLat) * (H - PAD * 2),   // north = up
+        hasGps: false, project: null, routePts: [], altPts: [], cones: [],
+        pts: nodes.map((_n, i) => ({
+          x: PAD + (i / n) * (W - PAD * 2),
+          y: H / 2 + (i % 2 === 0 ? -34 : 34),
         })),
       }
     }
-    // no GPS: spread along a time axis (still shows order + gaps)
-    const n = Math.max(nodes.length - 1, 1)
+    const geomAll = (route.geometry || [])
+    const coneRings = nodes.map((n) => (geo?.[n.camera_id] || {}).coverage_cone || null)
+    const all = [
+      ...coords.map((c) => [c.lat, c.lon]),
+      ...geomAll,
+      ...coneRings.filter(Boolean).flat(),
+    ]
+    const lats = all.map((p) => p[0]), lons = all.map((p) => p[1])
+    const minLat = Math.min(...lats), maxLat = Math.max(...lats)
+    const minLon = Math.min(...lons), maxLon = Math.max(...lons)
+    const spanLat = Math.max(maxLat - minLat, 1e-4), spanLon = Math.max(maxLon - minLon, 1e-4)
+    const proj = (lat, lon) => ({
+      x: PAD + ((lon - minLon) / spanLon) * (W - PAD * 2),
+      y: H - PAD - ((lat - minLat) / spanLat) * (H - PAD * 2),        // north = up
+    })
     return {
-      hasGps: false,
-      pts: nodes.map((_n, i) => ({
-        x: PAD + (i / n) * (W - PAD * 2),
-        y: H / 2 + (i % 2 === 0 ? -34 : 34),
-      })),
+      hasGps: true,
+      project: proj,
+      pts: coords.map((c) => proj(c.lat, c.lon)),
+      routePts: geomAll.map(([la, lo]) => proj(la, lo)),
+      altPts: (journey?.route?.alternatives || [])
+        .filter((a) => !a.primary && (a.geometry || []).length > 1)
+        .map((a) => ({ label: a.label, confidence: a.confidence,
+                       pts: a.geometry.map(([la, lo]) => proj(la, lo)) })),
+      cones: coneRings.map((ring) => ring ? ring.map(([la, lo]) => proj(la, lo)) : null),
     }
-  }, [nodes, geo])
+  }, [nodes, geo, route, journey])
 
   if (!nodes.length) return <div className="jn-map-empty">No journey to display.</div>
 
@@ -62,15 +80,39 @@ export default function JourneyMap({ journey, geo, onSelect, activeIdx }) {
         </defs>
         <rect width={W} height={H} fill="url(#jn-grid)" />
 
-        {/* Route overlay: ONLY drawn from a real routing-engine geometry.
-            No straight-line fallback (see routing.py NullRouteEngine). */}
-        {routeReady && (
-          <polyline points={pts.map((p) => `${p.x},${p.y}`).join(' ')} fill="none"
-                    stroke="var(--fp-accent)" strokeWidth="2.6" markerEnd="url(#jn-arrow)" />
+        {/* Camera coverage cones: what each camera can actually observe, from its
+            stored direction / field of view / coverage distance. */}
+        {hasGps && cones.map((ring, i) => ring && (
+          <polygon key={'cone' + i} points={ring.map((p) => `${p.x},${p.y}`).join(' ')}
+                   fill="var(--fp-accent)" fillOpacity="0.10"
+                   stroke="var(--fp-accent)" strokeOpacity="0.30" strokeWidth="1" />
+        ))}
+
+        {/* ROAD ROUTE. Drawn from the routing engine's own geometry (OSRM over
+            OpenStreetMap), never from the camera points - joining the cameras
+            directly would assert a path straight through buildings. When routing
+            is unavailable nothing is drawn and the reason is shown instead. */}
+        {altPts.map((a, i) => (
+          <polyline key={'alt' + i} points={a.pts.map((p) => `${p.x},${p.y}`).join(' ')}
+                    fill="none" stroke="var(--fp-warn)" strokeOpacity="0.45"
+                    strokeWidth="2" strokeDasharray="5 4" />
+        ))}
+        {routeReady && routePts.length > 1 && (
+          <polyline points={routePts.map((p) => `${p.x},${p.y}`).join(' ')} fill="none"
+                    stroke="var(--fp-accent)" strokeWidth="3" strokeLinejoin="round"
+                    strokeLinecap="round" markerEnd="url(#jn-arrow)" />
+        )}
+        {/* travelling pulse along the real road path (Part 6 animation) */}
+        {routeReady && routePts.length > 1 && (
+          <circle r="5" fill="var(--fp-accent)">
+            <animateMotion dur={`${Math.max(6, Math.min(24, routePts.length / 8))}s`}
+                           repeatCount="indefinite"
+                           path={'M' + routePts.map((p) => `${p.x},${p.y}`).join(' L')} />
+          </circle>
         )}
         {!routeReady && pts.length > 1 && (
           <text x={W / 2} y={26} textAnchor="middle" className="jn-leg-t">
-            route overlay unavailable — camera locations / routing engine required
+            {route.reason || 'Road route unavailable.'}
           </text>
         )}
 
@@ -107,11 +149,30 @@ export default function JourneyMap({ journey, geo, onSelect, activeIdx }) {
           )
         })}
       </svg>
+      {altPts.length > 0 && (
+        <div className="jn-map-alts">
+          <b>Possible road routes</b>
+          {(route.alternatives || []).map((a) => (
+            <span key={a.label} className={'jn-alt' + (a.primary ? ' on' : '')}>
+              {a.label} · {Math.round((a.confidence || 0) * 100)}%
+              {a.distance_m != null ? ` · ${(a.distance_m / 1000).toFixed(2)} km` : ''}
+            </span>
+          ))}
+          <span className="jn-map-warn">
+            The sightings fix the cameras, not the roads between them — routes are ranked, not certain.
+          </span>
+        </div>
+      )}
       <div className="jn-map-foot">
-        {journey?.map_notice
-          ? <span className="jn-map-warn">⚠ {journey.map_notice}</span>
-          : (hasGps ? `Geographic view (camera GPS) · route engine: ${route.provider || 'none'}`
-            : 'Sequence view — add camera locations in the Camera Registry to enable the geographic map, distance and speed.')}
+        {!hasGps
+          ? 'Sequence view — add camera locations in the Camera Registry to enable the geographic map, distance and speed.'
+          : routeReady
+            ? `Road route via ${route.provider}${route.cached ? ' (cached)' : ''} · ${routePts.length} road points`
+            : <span className="jn-map-warn">⚠ {route.reason || journey?.map_notice || 'Road route unavailable.'}</span>}
+        {(route.skipped_no_location || []).length > 0 && (
+          <span className="jn-map-warn"> · {route.skipped_no_location.length} matched camera(s) ignored:
+            no stored coordinates ({route.skipped_no_location.join(', ')})</span>
+        )}
       </div>
     </div>
   )
