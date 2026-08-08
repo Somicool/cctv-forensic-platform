@@ -257,6 +257,18 @@ export async function getRouteProviders() {
   return data
 }
 
+// Re-run the full pipeline over clips that were ALREADY processed. Their previous
+// analysis is discarded first, and each clip keeps its original camera, start time
+// and fps. `plates` / `faces` switch on number-plate reading and face recognition,
+// which Fast mode leaves off.
+export async function reprocessVideos(filenames, { mode, plates, faces } = {}) {
+  const { data } = await api.post('/ingest/reprocess', {
+    filenames: Array.isArray(filenames) ? filenames : [filenames],
+    mode, plates, faces,
+  })
+  return data
+}
+
 // ---- System / Settings ----
 export async function getSystemInfo() {
   const { data } = await api.get('/system/info')

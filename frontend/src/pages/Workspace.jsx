@@ -6,6 +6,7 @@ import {
   getLibrary, getVideos, getCameras, ingestAll, getIngestJob, stopIngest, uploadVideo,
   deleteVideo, searchText, searchPlate, trackDetection, createExport, logActivity, saveFace,
   getFaceForDetection, reconstructJourney, listCameraRegistry, saveRegistryCamera,
+  reprocessVideos,
 } from '../api'
 import { useNavigate } from 'react-router-dom'
 import VideoPlayer from '../components/VideoPlayer'
@@ -91,6 +92,7 @@ export default function Workspace() {
   const [pendingFile, setPendingFile] = useState(null) // upload awaiting camera assignment
   const navigate = useNavigate()
   const [footageOpen, setFootageOpen] = useState(true)
+  const [reprocess, setReprocess] = useState(null)   // clip awaiting re-process options
 
   const fileRef = useRef(null)
   const playerRef = useRef(null)
@@ -103,6 +105,23 @@ export default function Workspace() {
 
   const nameFor = (id) => { const n = (cameras || []).find((c) => c.camera_id === id)?.name; return (!n || n === id) ? '' : n }
   const camLabel = (id) => { const n = nameFor(id); return n ? `${id} · ${n}` : id }
+
+  // Re-run one clip through the pipeline. Kept behind a dialog because the old
+  // analysis is discarded first, and because plate reading / face recognition are
+  // off in Fast mode - this is where the operator turns them on.
+  async function runReprocess(v, opts) {
+    setError(null)
+    setReprocess(null)
+    try {
+      const r = await reprocessVideos(v.filename, opts)
+      if (r.busy) { setError(r.message || 'Another job is already running.'); return }
+      autoOpenRef.current = false
+      setJob({ job_id: r.job_id, status: 'processing', done: 0, total: r.total || 1,
+               current: v.filename })
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message || 'Could not start re-processing')
+    }
+  }
 
   async function loadLibrary() {
     try { return await getLibrary().then((items) => { setLibrary(items); return items }) }
@@ -360,6 +379,12 @@ export default function Workspace() {
                           {analysed ? <video src={v.url + '#t=1'} muted preload="metadata" /> : <div className="ph">▶</div>}
                           <span className={'ws-badge ws-fc-badge ' + (analysed ? 'ok' : 'no')}>{analysed ? 'Analysed' : 'Pending'}</span>
                           {analysed && <div className="ws-fc-open">Investigate ›</div>}
+                          {analysed && (
+                            <button className="ws-fc-again"
+                              title="Process this video again (re-runs detection, tracking and re-ID)"
+                              disabled={processing || uploading}
+                              onClick={(e) => { e.stopPropagation(); setReprocess(v) }}>⟳</button>
+                          )}
                           <button className="ws-fc-del" title="Delete video permanently" disabled={processing || uploading}
                             onClick={(e) => { e.stopPropagation(); handleDelete(v) }}>🗑</button>
                         </div>
@@ -552,6 +577,9 @@ export default function Workspace() {
         onClose={() => setPendingFile(null)}
         onGo={(camId) => { const f = pendingFile; setPendingFile(null); handleUpload(f, camId) }} />}
 
+      {reprocess && <ReprocessDialog clip={reprocess} onClose={() => setReprocess(null)}
+        onGo={(opts) => runReprocess(reprocess, opts)} />}
+
       {toast && <div className="ws-toast">{toast}</div>}
     </div>
   )
@@ -562,6 +590,61 @@ export default function Workspace() {
    camera (coordinates are never asked twice) or register this camera once, with
    its location + siting details, and reuse it for all future uploads. If the
    video itself carries GPS metadata the backend auto-matches the camera. */
+/* Re-process ONE clip. Detection, tracking and re-ID are computed once at
+   ingestion and everything downstream replays that stored output, so a clip has to
+   be re-processed for pipeline improvements to reach it. This is also the only
+   place to switch on plate reading / face recognition, which Fast mode omits. */
+function ReprocessDialog({ clip, onClose, onGo }) {
+  const [mode, setMode] = useState('fast')
+  const [plates, setPlates] = useState(true)
+  const [faces, setFaces] = useState(false)
+  useEffect(() => {
+    const esc = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', esc)
+    return () => window.removeEventListener('keydown', esc)
+  }, [onClose])
+
+  return (
+    <div className="ws-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="ws-modal" style={{ maxWidth: 540 }}>
+        <button className="ws-modal-x" onClick={onClose}>×</button>
+        <h3>Process this video again</h3>
+        <p className="muted" style={{ marginTop: -6, fontSize: 13, lineHeight: 1.5 }}>
+          <b>{clip.filename}</b> will be re-analysed from scratch. Its existing
+          detections, tracks, embeddings, faces and plates are discarded first. The
+          camera assignment, start time and frame rate are kept, and the video file
+          itself is never deleted.
+        </p>
+
+        <div className="ws-fld">
+          <label>Processing mode</label>
+          <select className="eg-select" value={mode} onChange={(e) => setMode(e.target.value)}>
+            <option value="fast">Fast — 2 fps, quicker (recommended)</option>
+            <option value="accurate">Accurate — 3 fps, larger frames, much slower</option>
+          </select>
+        </div>
+
+        <label className="jn-cam-pick">
+          <input type="checkbox" checked={plates} onChange={(e) => setPlates(e.target.checked)} />
+          <span className="id">Read number plates (ANPR)</span>
+          <span className="muted" style={{ fontSize: 11 }}>needed for plate search; slow</span>
+        </label>
+        <label className="jn-cam-pick" style={{ borderBottom: 'none' }}>
+          <input type="checkbox" checked={faces} onChange={(e) => setFaces(e.target.checked)} />
+          <span className="id">Recognise faces</span>
+          <span className="muted" style={{ fontSize: 11 }}>improves cross-camera identity</span>
+        </label>
+
+        <div className="ws-modal-actions" style={{ marginTop: 14 }}>
+          <button type="button" className="fp-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="fp-btn primary"
+                  onClick={() => onGo({ mode, plates, faces })}>Process again</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function CameraAssign({ file, onClose, onGo }) {
   const [cams, setCams] = useState(null)
   const [mode, setMode] = useState('existing')      // 'existing' | 'new'

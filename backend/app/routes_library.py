@@ -80,7 +80,8 @@ def library_route():
 
 
 @router.post("/ingest/all")
-def ingest_all_route(mode: str | None = None, force: bool = False):
+def ingest_all_route(mode: str | None = None, force: bool = False,
+                     plates: bool | None = None, faces: bool | None = None):
     """Process every unprocessed video in the folder (one sequential background job).
 
     Optional `mode` ("fast" default | "accurate"); None -> config.PROCESSING_MODE.
@@ -89,6 +90,11 @@ def ingest_all_route(mode: str | None = None, force: bool = False):
     analysis first. Without it, an already-processed clip is skipped - which means
     an improvement to detection or tracking has no effect on existing footage until
     it is deliberately re-processed. Prefer /ingest/reprocess for named clips.
+
+    `plates=true` / `faces=true` switch on number-plate reading and face
+    recognition regardless of the mode preset. Fast mode leaves BOTH off (that is
+    what makes it fast), so plate search finds nothing in footage ingested with the
+    defaults. These flags enable them without paying for the rest of Accurate mode.
     """
     if ingest_jobs.has_running_job():
         return {"job_id": None, "total": 0, "busy": True,
@@ -122,15 +128,21 @@ def ingest_all_route(mode: str | None = None, force: bool = False):
             ingest_jobs.update(job_id, status="processing", current=f.name, done=i)
             try:
                 if force:
-                    # discard the previous analysis first, keeping the source file,
-                    # and re-register the clip with its ORIGINAL camera and start
-                    # time so timestamps, journeys and camera history still line up
-                    prev = purge_video_data(f.name, delete_file=False).get("previous") or {}
+                    # Re-ingest with the clip's ORIGINAL camera and start time so
+                    # timestamps and journeys still line up, THEN drop the old rows -
+                    # never before, or an interrupted run would lose both copies.
+                    with database.get_conn() as conn:
+                        old = [dict(r) for r in conn.execute(
+                            "SELECT video_id, camera_id, start_time, fps FROM videos "
+                            "WHERE filename=?", (f.name,)).fetchall()]
+                    prev = old[0] if old else {}
                     pipeline.ingest_video(f, camera_id=prev.get("camera_id"),
                                           start_time=prev.get("start_time"),
-                                          fps=prev.get("fps"), mode=mode)
+                                          fps=prev.get("fps"), mode=mode,
+                                          do_plates=plates, do_faces=faces)
+                    purge_video_ids([o["video_id"] for o in old])
                     continue
-                pipeline.ingest_video(f, mode=mode)
+                pipeline.ingest_video(f, mode=mode, do_plates=plates, do_faces=faces)
             except Exception as exc:  # noqa: BLE001 - keep going, report per file
                 if ingest_jobs.stop_requested():   # the exception was our stop signal
                     stopped = True
@@ -156,7 +168,9 @@ def ingest_reprocess_route(payload: dict | None = None):
     that does it.
 
     Body: {"filenames": ["test1.mp4", ...]} or {"cameras": ["test1", ...]}
-          or {"all": true}, plus optional {"mode": "fast"|"accurate"}.
+          or {"all": true}, plus optional {"mode": "fast"|"accurate"} and
+          {"plates": true, "faces": true} to switch on number-plate reading /
+          face recognition, which Fast mode leaves off.
 
     Each clip keeps its original camera_id, start_time and fps, so timestamps and
     journeys stay valid. The source video is never deleted, only its analysis.
@@ -191,6 +205,8 @@ def ingest_reprocess_route(payload: dict | None = None):
 
     from .ingestion import pipeline
     mode = payload.get("mode")
+    plates = payload.get("plates")
+    faces = payload.get("faces")
     job_id = ingest_jobs.new_job(f"reprocess {len(targets)} video(s)")
     ingest_jobs.update(job_id, status="processing", total=len(targets), done=0,
                        current=targets[0].name)
@@ -205,10 +221,19 @@ def ingest_reprocess_route(payload: dict | None = None):
             ingest_progress.reset()
             ingest_jobs.update(job_id, status="processing", current=f.name, done=i)
             try:
-                prev = purge_video_data(f.name, delete_file=False).get("previous") or {}
+                # Re-ingest FIRST, then discard the old rows. Purging up front meant
+                # a stopped or failed run destroyed the analysis it was replacing and
+                # left the clip with nothing at all.
+                with database.get_conn() as conn:
+                    old = [dict(r) for r in conn.execute(
+                        "SELECT video_id, camera_id, start_time, fps FROM videos "
+                        "WHERE filename=?", (f.name,)).fetchall()]
+                prev = old[0] if old else {}
                 pipeline.ingest_video(f, camera_id=prev.get("camera_id"),
                                       start_time=prev.get("start_time"),
-                                      fps=prev.get("fps"), mode=mode)
+                                      fps=prev.get("fps"), mode=mode,
+                                      do_plates=plates, do_faces=faces)
+                purge_video_ids([o["video_id"] for o in old])
             except Exception as exc:  # noqa: BLE001 - keep going, report per file
                 if ingest_jobs.stop_requested():
                     stopped = True
@@ -221,16 +246,23 @@ def ingest_reprocess_route(payload: dict | None = None):
 
     threading.Thread(target=run, daemon=True).start()
     return {"job_id": job_id, "total": len(targets),
-            "files": [f.name for f in targets], "mode": mode or "default"}
+            "files": [f.name for f in targets], "mode": mode or "default",
+            "plates": plates, "faces": faces}
 
 
 @router.post("/ingest/upload")
 async def ingest_upload_route(file: UploadFile = File(...),
                               camera_id: str | None = Form(None),
-                              mode: str | None = Form(None)):
+                              mode: str | None = Form(None),
+                              plates: bool | None = Form(None),
+                              faces: bool | None = Form(None)):
     """Accept a video uploaded from the user's device, save it into the videos
     folder, and kick off the EXISTING ingestion pipeline in a background job.
     Progress streams over the same GET /ingest/job/{job_id} the batch ingest uses.
+
+    `plates` / `faces` enable number-plate reading and face recognition. Fast mode
+    leaves both OFF by design, so without these a plate search over the uploaded
+    clip will legitimately return nothing.
     """
     if ingest_jobs.has_running_job():
         return {"job_id": None, "busy": True,
@@ -270,7 +302,8 @@ async def ingest_upload_route(file: UploadFile = File(...),
             # Fast mode (default): adaptive sampling, gated faces/plates, incremental
             # index -> the uploaded clip becomes searchable quickly. "accurate" runs
             # the full forensic pipeline.
-            pipeline.ingest_video(dest, camera_id=cam, mode=run_mode)
+            pipeline.ingest_video(dest, camera_id=cam, mode=run_mode,
+                                  do_plates=plates, do_faces=faces)
             ingest_jobs.update(job_id, status="done", done=1, current=None)
         except Exception as exc:  # noqa: BLE001 - report failure to the client
             ingest_jobs.update(job_id, status="error", last_error=str(exc), current=None)
@@ -279,6 +312,45 @@ async def ingest_upload_route(file: UploadFile = File(...),
 
     threading.Thread(target=run, daemon=True).start()
     return {"job_id": job_id, "filename": fname, "total": 1, "mode": run_mode}
+
+
+def purge_video_ids(video_ids: list, cameras=None, stem: str | None = None) -> dict:
+    """Delete everything derived from specific video rows, leaving the file alone.
+
+    Used by re-processing to drop the PREVIOUS analysis only after the replacement
+    has been written, so an interrupted or failed re-run cannot destroy the data it
+    was meant to replace."""
+    from .search import vector_store
+    import shutil
+
+    removed = {"clip": 0, "reid": 0, "face": 0}
+    if not video_ids:
+        return {"video_ids": [], "vectors_removed": removed}
+    with database.get_conn() as conn:
+        for vid in video_ids:
+            det_ids = [x["detection_id"] for x in
+                       conn.execute("SELECT detection_id FROM detections WHERE video_id=?",
+                                    (vid,)).fetchall()]
+            face_ids = [x["face_id"] for x in conn.execute(
+                "SELECT face_id FROM faces WHERE detection_id IN "
+                "(SELECT detection_id FROM detections WHERE video_id=?)", (vid,)).fetchall()]
+            if det_ids:
+                removed["clip"] += vector_store.remove("clip", det_ids)
+                removed["reid"] += vector_store.remove("reid", det_ids)
+            if face_ids:
+                removed["face"] += vector_store.remove("face", face_ids)
+            conn.execute("DELETE FROM faces WHERE detection_id IN "
+                         "(SELECT detection_id FROM detections WHERE video_id=?)", (vid,))
+            conn.execute("DELETE FROM plates WHERE detection_id IN "
+                         "(SELECT detection_id FROM detections WHERE video_id=?)", (vid,))
+            conn.execute("DELETE FROM detections WHERE video_id=?", (vid,))
+            conn.execute("DELETE FROM tracks WHERE video_id=?", (vid,))
+            conn.execute("DELETE FROM track_identity WHERE video_id=?", (vid,))
+            conn.execute("DELETE FROM videos WHERE video_id=?", (vid,))
+    vector_store.save()
+    # crops/frames live under <root>/<camera>/<stem>, shared by old and new runs, so
+    # they are NOT removed here - the replacement run has already rewritten them.
+    return {"video_ids": list(video_ids), "vectors_removed": removed}
 
 
 def purge_video_data(fname: str, delete_file: bool = True) -> dict:
