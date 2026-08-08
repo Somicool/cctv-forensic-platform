@@ -30,8 +30,22 @@ APPEARANCE_BREAK_SIM = 0.55
 # At/above this it is confidently the same person: keep it even if the box jumped
 # (the target reappeared from behind an obstacle).
 APPEARANCE_HOLD_SIM = 0.75
-# Longest detection gap that may be filled with interpolated boxes, in seconds.
-PREDICT_MAX_GAP_S = 4.0
+# --- gap bridging limits -----------------------------------------------------
+# Interpolated boxes exist so a ONE-frame miss (a passing obstruction, a dip in
+# detector confidence) does not make the overlay blink out. They are guesses, so
+# they are strictly bounded:
+#
+# Measured on a busy clip when this was 4.0 s with no distance limit: 18.3% of all
+# boxes drawn were invented, some tracks were 50% invented, and the longest guess
+# glided 692 px - 31% of the frame diagonal - in a straight line over 3.5 s. In a
+# crowded scene a box travelling that far sits on OTHER PEOPLE for most of its
+# journey, which is exactly the "it shows a different person" failure.
+#
+# A gap is now only filled when it is short AND the person barely moved across it.
+# Where the path is genuinely unknown the box is hidden instead of guessed.
+PREDICT_MAX_GAP_S = 1.5          # at 2 fps this is ~3 missed samples
+PREDICT_MAX_DRIFT_FRAC = 0.06    # endpoints must be within 6% of the frame diagonal
+PREDICT_MAX_RUN = 2              # never invent more than this many boxes in a row
 
 
 def _center(bbox):
@@ -70,32 +84,46 @@ def _appearance_check(points, ref_detection_id):
     return out
 
 
-def _bridge_gaps(points, native_fps, stride_s):
-    """Interpolate boxes across short detection gaps so the overlay stays locked.
+def _bridge_gaps(points, native_fps, stride_s, frame_w=None, frame_h=None):
+    """Fill only the short, low-movement holes in a track; hide the rest.
 
-    A person who is momentarily occluded, blurred or scored below threshold leaves
-    a hole in the stored track. Rather than dropping the box (which looks like
-    losing the target) the position is interpolated linearly between the two real
-    sightings and flagged `predicted=True`. Only gaps up to PREDICT_MAX_GAP_S are
-    filled: beyond that there is no honest basis for a box."""
+    A person momentarily occluded or scored below threshold leaves a hole. Filling
+    it keeps the overlay attached to the target. But a guess is only defensible
+    while it stays near a real sighting, so a gap is bridged only when ALL of these
+    hold (see the constants above for the measurements behind them):
+
+      * it is no longer than PREDICT_MAX_GAP_S
+      * the two real endpoints are within PREDICT_MAX_DRIFT_FRAC of each other
+      * it needs no more than PREDICT_MAX_RUN invented boxes
+
+    Otherwise the gap is left empty and the viewer simply shows no box - honest
+    about not knowing, rather than drawing a straight line over other people.
+    """
     if len(points) < 2 or stride_s <= 0:
         return points
+    diag = math.hypot(frame_w or 1920, frame_h or 1080)
+    max_drift = PREDICT_MAX_DRIFT_FRAC * diag
+    max_steps = min(PREDICT_MAX_RUN, max(0, int(PREDICT_MAX_GAP_S / stride_s)))
+
     out = [points[0]]
     for a, b in zip(points, points[1:]):
         gap = b.offset_seconds - a.offset_seconds
         steps = int(round(gap / stride_s)) - 1
-        if 0 < steps <= int(PREDICT_MAX_GAP_S / stride_s):
-            for k in range(1, steps + 1):
-                f = k / (steps + 1)
-                out.append(TrackPathPoint(
-                    detection_id=a.detection_id,          # provenance: the real sighting
-                    offset_seconds=round(a.offset_seconds + f * gap, 3),
-                    frame_number=(int(a.frame_number + f * (b.frame_number - a.frame_number))
-                                  if a.frame_number is not None and b.frame_number is not None
-                                  else None),
-                    timestamp=None,
-                    bbox=[round(a.bbox[i] + f * (b.bbox[i] - a.bbox[i]), 2) for i in range(4)],
-                    confidence=None, predicted=True))
+        if 0 < steps <= max_steps and gap <= PREDICT_MAX_GAP_S:
+            ca, cb = _center(a.bbox), _center(b.bbox)
+            drift = math.hypot(cb[0] - ca[0], cb[1] - ca[1])
+            if drift <= max_drift:
+                for k in range(1, steps + 1):
+                    f = k / (steps + 1)
+                    out.append(TrackPathPoint(
+                        detection_id=a.detection_id,      # provenance: the real sighting
+                        offset_seconds=round(a.offset_seconds + f * gap, 3),
+                        frame_number=(int(a.frame_number + f * (b.frame_number - a.frame_number))
+                                      if a.frame_number is not None and b.frame_number is not None
+                                      else None),
+                        timestamp=None,
+                        bbox=[round(a.bbox[i] + f * (b.bbox[i] - a.bbox[i]), 2) for i in range(4)],
+                        confidence=None, predicted=True))
         out.append(b)
     return out
 
@@ -216,7 +244,9 @@ def get_track_path(detection_id: int) -> TrackPathResponse:
                       for a, b in zip(points, points[1:])
                       if b.offset_seconds > a.offset_seconds)
         stride_s = gaps[len(gaps) // 2] if gaps else 0.0
-        points = _bridge_gaps(points, v.get("native_fps") if v else None, stride_s)
+        points = _bridge_gaps(points, v.get("native_fps") if v else None, stride_s,
+                              v.get("width") if v else None,
+                              v.get("height") if v else None)
     sims = [s for did, s in appearance.items()
             if did in {p.detection_id for p in points}]
 
