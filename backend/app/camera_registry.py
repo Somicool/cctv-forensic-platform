@@ -60,12 +60,130 @@ def _valid_latlon(lat, lon) -> bool:
     return -90 <= lat <= 90 and -180 <= lon <= 180 and not (lat == 0 and lon == 0)
 
 
+_UNICODE_MARKS = {"\u00ba": "\u00b0", "\u2032": "'", "\u2019": "'", "\u02b9": "'",
+                  "\u2033": '"', "\u201d": '"', "\u02ba": '"', "\u2018": "'",
+                  "\u201c": '"', "\u2212": "-", "\u2013": "-"}
+# degrees[ minutes[ seconds]] with optional °, ', " markers and a hemisphere letter
+_DMS_RE = re.compile(r"""^\s*(?P<h1>[NSEWnsew])?\s*(?P<sign>[-+])?\s*
+    (?P<d>\d+(?:[.,]\d+)?)\s*(?:\u00b0|deg\b|d\b)?\s*
+    (?:(?P<m>\d+(?:[.,]\d+)?)\s*(?:'|\u2032|min\b|m\b)\s*
+       (?:(?P<s>\d+(?:[.,]\d+)?)\s*(?:"|''|\u2033|sec\b|s\b)?\s*)?
+     |(?P<m2>\d+(?:[.,]\d+)?)\s+(?P<s2>\d+(?:[.,]\d+)?)\s*
+    )?
+    (?P<h2>[NSEWnsew])?\s*$""", re.X)
+
+
+def _norm_marks(s: str) -> str:
+    for a, b in _UNICODE_MARKS.items():
+        s = s.replace(a, b)
+    return s
+
+
+def _parse_single(s: str, which: str) -> float:
+    """One coordinate in decimal degrees, DMS or DM notation."""
+    m = _DMS_RE.match(s)
+    if not m:
+        raise ValueError(
+            f"{which} could not be read: {s!r}. Use decimal degrees (21.1959) or "
+            f"degrees-minutes-seconds (21\u00b011'45.2\"N)")
+    num = lambda x: float(str(x).replace(",", "."))          # noqa: E731
+    deg = num(m.group("d"))
+    minutes = m.group("m") or m.group("m2")
+    seconds = m.group("s") or m.group("s2")
+    val = deg + (num(minutes) / 60.0 if minutes else 0.0) \
+              + (num(seconds) / 3600.0 if seconds else 0.0)
+    hemi = (m.group("h1") or m.group("h2") or "").upper()
+    if m.group("sign") == "-" or hemi in ("S", "W"):
+        val = -val
+    return val
+
+
+def parse_coord(v, which: str):
+    """Parse one coordinate the way a human actually writes it.
+
+    Operators copy coordinates out of Google Maps, phones, GPS units and survey
+    reports, so the field legitimately arrives in several notations:
+
+        21.1959                 decimal degrees
+        21,1959                 comma decimal separator
+        22\u00b032'54.6"             degrees-minutes-seconds  <- what Maps shows
+        22\u00b0 32' 54.6" N         DMS with spaces and hemisphere
+        22 32 54.6              DMS with plain spaces
+        21.1959, 72.8302        the whole pair pasted into one box
+
+    DMS is the important one: it is what "copy coordinates" gives you in Google
+    Maps. An earlier version stripped the \u00b0 ' " characters as punctuation, which
+    silently turned 22\u00b032'54.6" into 223254.6 and rejected it as out of range.
+    Degrees, minutes and seconds are now converted properly.
+
+    Returns (value_or_None, other_or_None): `other` is set when a full pair was
+    pasted into one field, so the caller can fill the partner coordinate.
+    """
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None, None
+    if isinstance(v, (int, float)):
+        return float(v), None
+    s = _norm_marks(str(v).strip())
+
+    # Split a pasted PAIR. A comma is ambiguous - "21.1959, 72.8302" is two values
+    # while "21,1959" is one value with a comma decimal separator - so only split
+    # when both halves parse AND land in valid latitude/longitude ranges.
+    if "," in s:
+        head, _, tail = s.partition(",")
+        if tail.strip():
+            try:
+                a, b = _parse_single(head.strip(), which), _parse_single(tail.strip(), which)
+                if abs(a) <= 90 and abs(b) <= 180:
+                    return a, b
+            except ValueError:
+                pass                                  # not a pair; fall through
+    return _parse_single(s, which), None
+
+
 # ------------------------------------------------------------------ CRUD
+DEFAULT_FOV_DEG = 70.0
+DEFAULT_COVERAGE_M = 60.0
+
+
+def coverage_cone(cam: dict, points: int = 18) -> list | None:
+    """Approximate viewing cone as a closed [[lat, lon], ...] polygon.
+
+    Built from the stored facing direction, field of view and coverage distance so
+    the map can show what each camera can actually observe. Returns None without
+    coordinates - the cone is never guessed from nothing. Facing/FOV fall back to
+    documented defaults, which is stated in the payload via `cone_estimated`."""
+    import math
+    if not _valid_latlon(cam.get("lat"), cam.get("lon")):
+        return None
+    lat, lon = float(cam["lat"]), float(cam["lon"])
+    facing = cam.get("facing_deg")
+    if facing is None:
+        return None                                   # direction unknown -> no cone
+    fov = float(cam.get("fov_deg") or DEFAULT_FOV_DEG)
+    reach_m = float(cam.get("coverage_m") or DEFAULT_COVERAGE_M)
+    half = max(1.0, min(180.0, fov / 2.0))
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * max(0.05, math.cos(math.radians(lat)))
+    ring = [[lat, lon]]
+    for i in range(points + 1):
+        brg = math.radians(float(facing) - half + (2 * half) * i / points)
+        ring.append([lat + (reach_m * math.cos(brg)) / m_per_deg_lat,
+                     lon + (reach_m * math.sin(brg)) / m_per_deg_lon])
+    ring.append([lat, lon])
+    return ring
+
+
 def _row(r) -> dict:
     d = dict(r)
     d["has_gps"] = _valid_latlon(d.get("lat"), d.get("lon"))
     d["facing"] = compass_name(d.get("facing_deg"))
     d["active"] = bool(d.get("active", 1))
+    # viewing cone for the map (Part 8). Absent when location or direction is unknown.
+    d["coverage_cone"] = coverage_cone(d)
+    d["cone_estimated"] = bool(d["coverage_cone"]) and (
+        d.get("fov_deg") is None or d.get("coverage_m") is None)
+    d["status"] = ("offline" if not d["active"] else
+                   "located" if d["has_gps"] else "no-location")
     return d
 
 
@@ -84,9 +202,22 @@ def list_cameras(include_inactive: bool = True) -> list[dict]:
         dets = {r["camera_id"]: r["n"] for r in conn.execute(
             "SELECT camera_id, COUNT(1) n FROM detections WHERE class_label!='scene' "
             "GROUP BY camera_id").fetchall()}
+        # investigations that touched each camera, via the journeys they contain
+        invs: dict = {}
+        try:
+            for r in conn.execute("SELECT investigation, data FROM journeys").fetchall():
+                try:
+                    nodes = (json.loads(r["data"]).get("primary") or {}).get("nodes") or []
+                except Exception:
+                    continue
+                for cam in {n.get("camera_id") for n in nodes if n.get("camera_id")}:
+                    invs.setdefault(cam, set()).add(r["investigation"] or "unassigned")
+        except Exception:
+            invs = {}
     for c in out:
         c["video_count"] = vids.get(c["camera_id"], 0)
         c["detection_count"] = dets.get(c["camera_id"], 0)
+        c["investigation_count"] = len(invs.get(c["camera_id"], ()))
     return out
 
 
@@ -96,37 +227,98 @@ def get_camera(camera_id: str) -> dict | None:
     return _row(r) if r else None
 
 
+_NUMERIC = ("lat", "lon", "fov_deg", "coverage_m")
+_LABEL = {"lat": "Latitude", "lon": "Longitude", "fov_deg": "Field of view",
+          "coverage_m": "Coverage distance"}
+
+
 def upsert_camera(data: dict) -> dict:
-    """Create or update a registry camera. Only the registry fields are touched."""
+    """Create or update a registry camera.
+
+    Updates are PARTIAL: only the keys actually present in `data` are written.
+    This matters because several forms submit a subset of the record - the
+    camera-assign dialog on upload sends direction and coverage but no
+    coordinates, and the old full-row UPDATE therefore overwrote previously saved
+    latitude/longitude with NULL. That is what made a camera revert to
+    "No Location" after being saved a second time.
+
+    A key present but blank ("" or None) is an explicit clear and is honoured; a
+    key that is absent is left untouched.
+    """
     cid = (data.get("camera_id") or "").strip()
     if not cid:
         raise ValueError("camera_id is required")
-    vals = {
-        "name": data.get("name") or cid,
-        "location": data.get("location"),
-        "lat": data.get("lat"), "lon": data.get("lon"),
-        "address": data.get("address"), "road_name": data.get("road_name"),
-        "facing_deg": parse_facing(data.get("facing_deg") if "facing_deg" in data else data.get("facing")),
-        "fov_deg": data.get("fov_deg"), "coverage_m": data.get("coverage_m"),
-        "description": data.get("description"),
-        "active": 1 if data.get("active", True) else 0,
-    }
-    for k in ("lat", "lon", "fov_deg", "coverage_m"):
-        if vals[k] in ("", None):
-            vals[k] = None
+
+    # accept the "facing" alias without letting it mask an absent facing_deg
+    incoming = dict(data)
+    if "facing" in incoming and "facing_deg" not in incoming:
+        incoming["facing_deg"] = incoming.get("facing")
+
+    # Coordinates are parsed leniently first, because a whole pair pasted into the
+    # latitude box should fill both rather than fail.
+    if "lat" in incoming or "lon" in incoming:
+        lat_v, spill = parse_coord(incoming.get("lat"), "Latitude")
+        lon_v, _ = parse_coord(incoming.get("lon"), "Longitude")
+        if lon_v is None and spill is not None:
+            lon_v = spill                             # "21.19, 72.83" typed into Latitude
+        if "lat" in incoming:
+            incoming["lat"] = lat_v
+        if "lon" in incoming or spill is not None:
+            incoming["lon"] = lon_v
+
+    vals: dict = {}
+    for key in _FIELDS:
+        if key not in incoming:
+            continue                                  # absent -> preserve stored value
+        v = incoming[key]
+        if key == "facing_deg":
+            vals[key] = parse_facing(v)
+        elif key == "active":
+            vals[key] = 0 if v in (False, 0, "0", "false", "False", None) else 1
+        elif key in _NUMERIC:
+            if v in ("", None):
+                vals[key] = None
+            else:
+                try:
+                    vals[key] = float(str(v).strip().replace(",", "."))
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"{_LABEL.get(key, key)} must be a number, got {v!r}") from None
         else:
-            try:
-                vals[k] = float(vals[k])
-            except (TypeError, ValueError):
-                vals[k] = None
+            vals[key] = v if v not in ("",) else None
+
+    # Coordinates are the field everything downstream depends on, so a bad pair is
+    # rejected loudly instead of being silently stored as NULL.
+    if "lat" in vals or "lon" in vals:
+        existing = get_camera(cid) or {}
+        lat = vals["lat"] if "lat" in vals else existing.get("lat")
+        lon = vals["lon"] if "lon" in vals else existing.get("lon")
+        if (lat is None) != (lon is None):
+            raise ValueError(
+                "Latitude and Longitude must be filled in together - "
+                f"got Latitude={'(blank)' if lat is None else lat}, "
+                f"Longitude={'(blank)' if lon is None else lon}")
+        if lat is not None and not _valid_latlon(lat, lon):
+            why = ("latitude must be between -90 and 90" if not (-90 <= float(lat) <= 90)
+                   else "longitude must be between -180 and 180"
+                   if not (-180 <= float(lon) <= 180)
+                   else "0, 0 is not a real camera location")
+            raise ValueError(f"Coordinates rejected ({why}): {lat}, {lon}")
+
     now = database._now()
     with database.get_conn() as conn:
         exists = conn.execute("SELECT 1 FROM cameras WHERE camera_id=?", (cid,)).fetchone()
         if exists:
-            sets = ", ".join(f"{k}=?" for k in vals)
-            conn.execute(f"UPDATE cameras SET {sets}, source='registry', updated_at=? "
-                         "WHERE camera_id=?", (*vals.values(), now, cid))
+            if vals:
+                sets = ", ".join(f"{k}=?" for k in vals)
+                conn.execute(f"UPDATE cameras SET {sets}, source='registry', updated_at=? "
+                             "WHERE camera_id=?", (*vals.values(), now, cid))
+            else:
+                conn.execute("UPDATE cameras SET source='registry', updated_at=? "
+                             "WHERE camera_id=?", (now, cid))
         else:
+            vals.setdefault("name", incoming.get("name") or cid)
+            vals.setdefault("active", 1)
             cols = ", ".join(vals)
             ph = ",".join("?" * len(vals))
             conn.execute(f"INSERT INTO cameras (camera_id, {cols}, source, created_at, updated_at) "
