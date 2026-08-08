@@ -326,11 +326,31 @@ PLATE_DETECTOR_CONF = 0.25
 # sparse 2 FPS samples. For these tracks we re-open the source video and re-sample
 # DENSELY within the track's active window, score every candidate frame, and OCR
 # only the sharpest/largest plate crops. Normal detection sampling is unchanged.
+# --- ANPR cost control -------------------------------------------------------
+# OCR is by far the most expensive stage: PaddleOCR here is a CPU-only build
+# (paddle 2.6.2, compiled_with_cuda=False), so one OCR call costs ~140 ms and
+# read_plates makes several per region. Unbounded, a 300-vehicle clip needs hours.
+# These limits keep it finite; every one of them is a time/recall trade-off.
+#
+# Pre-OCR gate: regions smaller or flatter than this have never yielded a valid
+# plate, so they are rejected before an OCR call is spent on them.
+ANPR_ROI_MIN_SIDE = 16
+ANPR_ROI_BLUR_MIN = 18.0
+# Stop refining one region once a confident, well-formed plate has been read.
+PLATE_EARLY_EXIT_CONF = 0.80
+# Cap the vehicle tracks ANPR is attempted on per video, largest (closest) first.
+# Distant vehicles do not produce legible plates, so spending the budget on the
+# biggest crops is what maximises plates-per-second.
+ANPR_MAX_TRACKS_PER_VIDEO = 60
+
 ANPR_ADAPTIVE_ENABLED = True
 ANPR_TWOWHEELER_CLASSES = {3, 100, 106}     # motorcycle, auto-rickshaw, scooter (three-wheeler=100)
 ANPR_ADAPTIVE_FPS = 8                        # dense re-sampling FPS inside a track window
-ANPR_ADAPTIVE_MAX_FRAMES = 30                # cap candidate frames read per track (cost guard)
-ANPR_ADAPTIVE_TOPK = 6                       # sharpest/largest candidates actually OCR'd
+# Was 30 frames / top-6. With the early exit in anpr._vote_over_frames a settled
+# plate stops the loop regardless, so these ceilings now only bound the tracks
+# whose plate never resolves - which is exactly where the hours were going.
+ANPR_ADAPTIVE_MAX_FRAMES = 12                # cap candidate frames read per track (cost guard)
+ANPR_ADAPTIVE_TOPK = 4                       # sharpest/largest candidates actually OCR'd
 ANPR_SCORE_W_BLUR = 0.50                     # frame-quality score weights
 ANPR_SCORE_W_SIZE = 0.35
 ANPR_SCORE_W_CONF = 0.15

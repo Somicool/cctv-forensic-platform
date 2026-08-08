@@ -152,19 +152,53 @@ def _load(im):
     return im
 
 
+def _roi_legible(roi) -> bool:
+    """Cheap pre-OCR gate: is this region even worth an OCR call?
+
+    OCR is the expensive step by far (~140 ms per call, and read_plates makes
+    several per region), while measuring size and sharpness costs microseconds. A
+    region below the minimum side, or flatter than the blur floor, has never
+    produced a valid plate, so paying for OCR on it is pure waste. This is what
+    stops a video full of distant vehicles from taking hours."""
+    if roi is None or not getattr(roi, "size", 0):
+        return False
+    h, w = roi.shape[:2]
+    if min(h, w) < max(8, config.ANPR_ROI_MIN_SIDE):
+        return False
+    return _sharpness(roi) >= config.ANPR_ROI_BLUR_MIN
+
+
+def _settled(tally) -> bool:
+    """Has a plate already been agreed often/confidently enough to stop reading?
+
+    Once a candidate has the votes the pipeline requires to trust it, extra frames
+    cannot change the stored result - they only cost time."""
+    for t in tally.values():
+        if t["votes"] >= max(2, config.PLATE_MIN_VOTES) and t["conf"] >= config.PLATE_SINGLE_CONF:
+            return True
+    return False
+
+
 def _vote_over_frames(vehicle_crops, floor):
     """Detect the plate region in each vehicle crop, enhance, OCR and temporally
     vote. Returns (tally, frames_used, best_roi) where best_roi is the enhanced
-    plate crop that produced the single highest-confidence read."""
+    plate crop that produced the single highest-confidence read.
+
+    Stops early once a plate is settled, and skips regions that are too small or
+    too blurred to read before spending an OCR call on them."""
     tally: dict[str, dict] = {}
     frames_used = 0
     best_roi, best_roi_conf = None, -1.0
     for img in vehicle_crops:
         if img is None or not getattr(img, "size", 0):
             continue
+        if _settled(tally):
+            break
         regions = detect_plate_regions(img) or [img]     # plate region, else whole crop
         frame_hit = False
         for roi in regions:
+            if not _roi_legible(roi):
+                continue
             eroi = enhance_plate(roi)
             for p in plate_reader.read_plates(eroi, min_conf=floor):
                 t = tally.setdefault(p["text"], {"text": p["text"], "conf": 0.0,

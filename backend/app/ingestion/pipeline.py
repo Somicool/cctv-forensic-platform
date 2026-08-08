@@ -345,9 +345,19 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
     # reads only the largest crop of vehicles with a big, sharp plate region.
     t = time.time()
     plate_count = 0
+    budget = skipped_tracks = 0
     if plates_on and plate_cands:
         from . import plate_reader, anpr
-        for grp in plate_cands.values():
+        # Spend the ANPR budget on the CLOSEST vehicles first and cap how many
+        # tracks are attempted. OCR is CPU-bound here, so an unbounded loop over
+        # every vehicle track in a busy clip runs for hours while the distant ones
+        # contribute nothing readable.
+        groups = sorted(plate_cands.values(),
+                        key=lambda g: max((x["area"] for x in g), default=0),
+                        reverse=True)
+        budget = max(1, int(getattr(config, "ANPR_MAX_TRACKS_PER_VIDEO", 60)))
+        skipped_tracks = max(0, len(groups) - budget)
+        for grp in groups[:budget]:
             grp.sort(key=lambda g: g["area"], reverse=True)   # largest (closest) crops first
             top = grp[:config.PLATE_VOTE_FRAMES]
             rep = top[0]
@@ -394,6 +404,10 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
                         break
     t_plate = time.time() - t
     _emit("plates", 99, f"{plate_count} plates")
+    if plates_on and skipped_tracks:
+        print(f"[plates] ANPR budget reached: read the {budget} closest vehicle tracks, "
+              f"skipped {skipped_tracks} more distant ones "
+              f"(raise config.ANPR_MAX_TRACKS_PER_VIDEO to cover them)")
 
     if save_indexes:
         vector_store.save()
@@ -402,6 +416,15 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
     stats = {
         "video_id": video_id, "camera": camera_id, "video": video_path.name,
         "mode": mode, "fps": target_fps, "imgsz": imgsz,
+        # Make the two optional stages explicit. Fast mode leaves both OFF, and a
+        # silent skip here reads downstream as "plate search is broken".
+        "plates_enabled": plates_on, "faces_enabled": faces_on,
+        "notes": ([] if plates_on else
+                  ["number-plate reading was OFF for this run: no plates were "
+                   "indexed, so plate search will not match this clip. Re-run with "
+                   "plates=true (or mode=accurate) to read them."])
+                 + ([] if faces_on else
+                    ["face recognition was OFF for this run: no faces were indexed."]),
         "object_detections": n_dets, "scene_frames": scene_count,
         "tracks": len(track_meta), "person_reid": reid_count, "faces": face_count,
         "plates": plate_count,

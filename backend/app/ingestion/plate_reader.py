@@ -190,18 +190,35 @@ def read_plates(image, min_conf: float | None = None) -> list[dict]:
     engine = ocr_engines.get_engine()
     base = _upscale(img, 480)
     reads = []
+
+    def _confident_plate(rs) -> bool:
+        """A valid Indian-format plate read confidently enough to stop refining."""
+        for _b, t, c in rs:
+            if c >= config.PLATE_EARLY_EXIT_CONF and _candidate(t):
+                return True
+        return False
+
     base_reads = list(engine.readtext(base, allowlist=_ALLOWLIST))     # upscaled original
     reads += base_reads
-    reads += engine.readtext(_upscale(_enhance(img), 480), allowlist=_ALLOWLIST)  # enhanced
-    for region in _refine_regions(img):                               # refined proposals
-        reads += engine.readtext(region, allowlist=_ALLOWLIST)
-
+    # The variants below exist to rescue hard plates. When the plain read already
+    # gives a confident, well-formed plate they cannot improve the answer, so each
+    # extra OCR call is skipped - OCR dominates ingestion time.
+    if not _confident_plate(reads):
+        reads += engine.readtext(_upscale(_enhance(img), 480), allowlist=_ALLOWLIST)
+    if not _confident_plate(reads):
+        for region in _refine_regions(img):                           # refined proposals
+            reads += engine.readtext(region, allowlist=_ALLOWLIST)
+            if _confident_plate(reads):
+                break
     # Perspective-correct + re-read the most confident detected quads (deskew) -
     # the biggest win for angled / small plates.
-    for box, _t, _c in sorted(base_reads, key=lambda r: r[2], reverse=True)[:4]:
-        deskewed = _deskew(base, box)
-        if deskewed is not None and deskewed.size:
-            reads += engine.readtext(_upscale(deskewed, 240), allowlist=_ALLOWLIST)
+    if not _confident_plate(reads):
+        for box, _t, _c in sorted(base_reads, key=lambda r: r[2], reverse=True)[:4]:
+            deskewed = _deskew(base, box)
+            if deskewed is not None and deskewed.size:
+                reads += engine.readtext(_upscale(deskewed, 240), allowlist=_ALLOWLIST)
+                if _confident_plate(reads):
+                    break
 
     found: dict[str, dict] = {}
     for _bbox, text, conf in reads:
