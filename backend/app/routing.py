@@ -45,6 +45,10 @@ class RouteResult:
     duration_s: float | None = None
     geometry: list = field(default_factory=list)   # full [[lat, lon], ...] path
     reason: str | None = None                     # why unavailable, when applicable
+    endpoint: str | None = None                   # which host actually answered
+    road_route: bool = False                      # True only for real road geometry
+    alternatives: list = field(default_factory=list)   # other plausible road routes
+    cached: bool = False
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -60,7 +64,8 @@ class RouteEngine:
     def available(self) -> bool:                      # pragma: no cover - interface
         return False
 
-    def route(self, points: list[dict], profile: str = "foot") -> RouteResult:
+    def route(self, points: list[dict], profile: str = "foot",
+              alternatives: bool = False) -> RouteResult:
         raise NotImplementedError
 
 
@@ -75,7 +80,7 @@ class NullRouteEngine(RouteEngine):
     def available(self) -> bool:
         return False
 
-    def route(self, points, profile="foot") -> RouteResult:
+    def route(self, points, profile="foot", alternatives=False) -> RouteResult:
         return RouteResult(
             provider=self.name, available=False, profile=profile, geometry=[],
             reason=("No routing engine configured - road-accurate routes are not "
@@ -141,35 +146,78 @@ class _HttpRouteEngine(RouteEngine):
         return legs
 
 
-class OsrmEngine(_HttpRouteEngine):
-    """OSRM (also the backend behind the public OpenStreetMap routing demo).
+PUBLIC_OSRM = "https://router.project-osrm.org"
 
-    Configure with ROUTE_OSRM_URL, e.g. http://localhost:5000 for a self-hosted
-    instance. Nothing is contacted unless that variable is set."""
+
+class OsrmEngine(_HttpRouteEngine):
+    """OSRM road routing over OpenStreetMap data.
+
+    Endpoint selection (Part 5): a LOCAL instance is preferred because it works
+    offline and keeps case locations inside the deployment. If ROUTE_OSRM_URL is
+    unreachable - or unset - the public demo server is used so development still
+    produces real road geometry. Set ROUTE_OSRM_PUBLIC=0 to forbid the public
+    fallback entirely (recommended for real casework).
+
+    When every endpoint fails the result is UNAVAILABLE with an explicit reason.
+    A straight line is never substituted.
+    """
     name = "osrm"
     profiles = ("foot", "bike", "car")
     _OSRM_PROFILE = {"foot": "foot", "bike": "bike", "car": "driving"}
+    # public demo only serves the car profile
+    _PUBLIC_PROFILE = {"foot": "driving", "bike": "driving", "car": "driving"}
 
-    def route(self, points, profile="foot") -> RouteResult:
-        if not self.available():
-            return self._unavailable(profile, "OSRM not configured (set ROUTE_OSRM_URL)")
+    def __init__(self, base_url: str | None = None, allow_public: bool = True):
+        super().__init__(base_url=base_url)
+        self.allow_public = allow_public
+        self._local_ok: bool | None = None
+
+    def available(self) -> bool:
+        return bool(self.base_url) or self.allow_public
+
+    def endpoints(self, profile: str) -> list[tuple[str, str, str]]:
+        """(kind, base_url, osrm_profile) candidates in preference order."""
+        out = []
+        if self.base_url:
+            out.append(("local", self.base_url, self._OSRM_PROFILE.get(profile, "foot")))
+        if self.allow_public:
+            out.append(("public", PUBLIC_OSRM, self._PUBLIC_PROFILE.get(profile, "driving")))
+        return out
+
+    def route(self, points, profile: str = "foot", alternatives: bool = False) -> RouteResult:
+        if len(points) < 2:
+            return self._unavailable(profile, "at least two located cameras are required")
         coords = ";".join(f"{p['lon']},{p['lat']}" for p in points)
-        url = (f"{self.base_url}/route/v1/{self._OSRM_PROFILE.get(profile, 'foot')}/"
-               f"{coords}?overview=full&geometries=geojson&steps=false")
-        try:
-            data = _http_json(url)
-        except Exception as exc:
-            return self._unavailable(profile, f"OSRM request failed: {exc}")
-        routes = data.get("routes") or []
-        if not routes:
-            return self._unavailable(profile, "OSRM returned no route between these cameras")
-        r = routes[0]
+        errors = []
+        for kind, base, osrm_profile in self.endpoints(profile):
+            url = (f"{base}/route/v1/{osrm_profile}/{coords}"
+                   f"?overview=full&geometries=geojson&steps=false"
+                   f"&alternatives={'true' if alternatives else 'false'}")
+            try:
+                data = _http_json(url, timeout=(6.0 if kind == "local" else 12.0))
+            except Exception as exc:
+                errors.append(f"{kind}: {exc}")
+                continue
+            routes = data.get("routes") or []
+            if not routes:
+                errors.append(f"{kind}: {data.get('code') or 'no route'}")
+                continue
+            best = self._as_result(points, routes[0], profile, kind, base)
+            best.alternatives = [
+                self._as_result(points, r, profile, kind, base).to_dict()
+                for r in routes[1:4]]
+            return best
+        return self._unavailable(
+            profile, "Road route unavailable. " + "; ".join(errors[:3]))
+
+    def _as_result(self, points, r, profile, kind, base) -> RouteResult:
         geom = [[lat, lon] for lon, lat in (r.get("geometry") or {}).get("coordinates", [])]
-        return RouteResult(provider=self.name, available=True, profile=profile,
-                           geometry=geom, distance_m=r.get("distance"),
-                           duration_s=r.get("duration"),
-                           legs=self._legs_from_geometry(points, geom, r.get("distance"),
-                                                         r.get("duration")))
+        return RouteResult(
+            provider=f"{self.name}:{kind}", available=True, profile=profile,
+            geometry=geom, distance_m=r.get("distance"), duration_s=r.get("duration"),
+            endpoint=base, road_route=True,
+            legs=self._legs_from_geometry(points, geom, r.get("distance"),
+                                          r.get("duration")))
 
 
 class GraphHopperEngine(_HttpRouteEngine):
@@ -333,11 +381,76 @@ def providers() -> list[dict]:
 
 CONFIG_HINT = {
     "none": None,
-    "osrm": "ROUTE_OSRM_URL (e.g. http://localhost:5000 for a self-hosted OSRM/OSM instance)",
+    "osrm": ("ROUTE_OSRM_URL for a local instance (preferred, offline); falls back to "
+             "the public OSRM demo unless ROUTE_OSRM_PUBLIC=0"),
     "graphhopper": "ROUTE_GRAPHHOPPER_KEY (+ optional ROUTE_GRAPHHOPPER_URL)",
     "valhalla": "ROUTE_VALHALLA_URL",
     "google": "ROUTE_GOOGLE_KEY (sends camera coordinates to a third party)",
 }
+
+
+# ------------------------------------------------------------------ route cache
+_CACHE_TTL_S = 7 * 24 * 3600          # road geometry is stable; a week is ample
+
+
+def _cache_key(points, profile, alternatives) -> str:
+    import hashlib
+    raw = "|".join(f"{p['lat']:.6f},{p['lon']:.6f}" for p in points)
+    return hashlib.sha256(
+        f"{raw}|{profile}|{int(bool(alternatives))}".encode()).hexdigest()
+
+
+def cached_route(points, profile: str = "foot", alternatives: bool = True,
+                 engine: RouteEngine | None = None) -> dict:
+    """Road route with a persistent cache, so repeating an investigation is instant.
+
+    Routing is the only network call in the journey path; caching it on the
+    (coordinates, profile) pair removes it entirely on repeat. Failures are NOT
+    cached, so a temporary outage does not stick."""
+    from . import database
+
+    eng = engine or get_engine()
+    key = _cache_key(points, profile, alternatives)
+    try:
+        with database.get_conn() as conn:
+            row = conn.execute(
+                "SELECT payload, created_at FROM route_cache WHERE cache_key=?",
+                (key,)).fetchone()
+        if row:
+            import time as _t
+            from datetime import datetime
+            try:
+                age = (datetime.utcnow()
+                       - datetime.fromisoformat(str(row["created_at"]))).total_seconds()
+            except Exception:
+                age = 0
+            if age <= _CACHE_TTL_S:
+                out = json.loads(row["payload"])
+                out["cached"] = True
+                return out
+    except Exception:
+        pass                                          # cache is an optimisation only
+
+    res = eng.route(points, profile=profile, alternatives=alternatives).to_dict()
+    if res.get("available"):
+        try:
+            with database.get_conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO route_cache (cache_key, provider, profile, "
+                    " n_points, payload, created_at) VALUES (?,?,?,?,?,?)",
+                    (key, res.get("provider"), profile, len(points),
+                     json.dumps(res), database._now()))
+        except Exception:
+            pass
+    return res
+
+
+def clear_route_cache() -> int:
+    from . import database
+    with database.get_conn() as conn:
+        n = conn.execute("SELECT COUNT(1) n FROM route_cache").fetchone()["n"]
+        conn.execute("DELETE FROM route_cache")
+    return n
 
 
 def configure_from_env() -> str:
@@ -346,7 +459,8 @@ def configure_from_env() -> str:
     Order of preference favours self-hosted engines, which keep case location data
     inside the deployment. ROUTE_ENGINE forces a specific provider."""
     register(NullRouteEngine())
-    register(OsrmEngine(base_url=os.getenv("ROUTE_OSRM_URL")))
+    register(OsrmEngine(base_url=os.getenv("ROUTE_OSRM_URL"),
+                        allow_public=os.getenv("ROUTE_OSRM_PUBLIC", "1") != "0"))
     register(GraphHopperEngine(base_url=os.getenv("ROUTE_GRAPHHOPPER_URL"),
                                api_key=os.getenv("ROUTE_GRAPHHOPPER_KEY")))
     register(ValhallaEngine(base_url=os.getenv("ROUTE_VALHALLA_URL")))

@@ -173,6 +173,18 @@ CREATE TABLE IF NOT EXISTS track_identity (
     PRIMARY KEY (video_id, track_id)
 );
 
+-- OSRM road-route cache, keyed on the exact camera coordinate sequence. Routing
+-- is the only network call in the journey path, so caching it makes a repeated
+-- investigation instant. Failures are never cached (see app/routing.py).
+CREATE TABLE IF NOT EXISTS route_cache (
+    cache_key   TEXT PRIMARY KEY,
+    provider    TEXT,
+    profile     TEXT,
+    n_points    INTEGER,
+    payload     TEXT,
+    created_at  TEXT
+);
+
 -- Reconstructed cross-camera journeys, stored permanently per investigation.
 -- Full result (nodes/legs/alternatives) is kept as JSON; see app/journey.py.
 CREATE TABLE IF NOT EXISTS journeys (

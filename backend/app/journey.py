@@ -277,28 +277,67 @@ UNAVAILABLE_MSG = ("Journey reconstruction unavailable until valid camera "
 
 
 def _route_for(nodes: list[dict], geo: dict) -> dict:
-    """Ask the active route engine for a road-accurate path between the cameras.
+    """Real road route between the matched cameras, via OSRM (OpenStreetMap).
 
-    Requires >= 2 cameras with valid GPS in the Camera Registry. When locations
-    are missing - or no routing backend is configured - we return an explicitly
-    UNAVAILABLE result with empty geometry: no misleading straight lines are ever
-    produced."""
-    pts = []
+    Only cameras the person was ACTUALLY detected at are routed, in time order, and
+    only those with stored coordinates. Cameras without coordinates are skipped and
+    named in `skipped_no_location` so the omission is visible rather than silent.
+
+    Fewer than two located cameras produces no route at all. A routing failure
+    produces an explicit "Road route unavailable." - a straight line between
+    cameras is never substituted, because it would assert a path through buildings
+    that the evidence does not support."""
+    pts, skipped = [], []
     for n in nodes:
         g = geo.get(n["camera_id"]) or {}
         if g.get("lat") is not None and g.get("lon") is not None:
             pts.append({"camera_id": n["camera_id"], "lat": float(g["lat"]),
                         "lon": float(g["lon"])})
+        else:
+            skipped.append(n["camera_id"])
     if len(pts) < 2:
         return {"available": False, "provider": None, "geometry": [],
-                "reason": UNAVAILABLE_MSG,
-                "cameras_with_gps": len(pts), "cameras_needed": 2}
-    engine = routing.get_engine()
-    res = engine.route(pts, profile="foot").to_dict()
+                "road_route": False,
+                "reason": (UNAVAILABLE_MSG if not pts else
+                           "Only one matched camera has coordinates - at least two "
+                           "are required to reconstruct a route."),
+                "cameras_with_gps": len(pts), "cameras_needed": 2,
+                "skipped_no_location": skipped}
+
+    res = routing.cached_route(pts, profile="foot", alternatives=True)
     res["cameras_with_gps"] = len(pts)
-    if not res.get("available") and not res.get("reason"):
-        res["reason"] = UNAVAILABLE_MSG
+    res["skipped_no_location"] = skipped
+    res["routed_cameras"] = [p["camera_id"] for p in pts]
+    if not res.get("available"):
+        res["reason"] = res.get("reason") or "Road route unavailable."
+    else:
+        # score the alternatives so none is presented as certain (Part 7)
+        res["alternatives"] = _score_alternatives(res)
     return res
+
+
+def _score_alternatives(res: dict) -> list[dict]:
+    """Label each road route returned by OSRM with a relative confidence.
+
+    OSRM offers several plausible ways to drive/walk between the same points. The
+    evidence only fixes the cameras, not the roads taken between them, so the
+    shortest-duration route is the most likely rather than the certain one.
+    Confidence is its share of inverse travel time across the candidates."""
+    routes = [{"label": "Route A", "distance_m": res.get("distance_m"),
+               "duration_s": res.get("duration_s"), "geometry": res.get("geometry") or [],
+               "primary": True}]
+    for i, alt in enumerate(res.get("alternatives") or []):
+        routes.append({"label": f"Route {chr(ord('B') + i)}",
+                       "distance_m": alt.get("distance_m"),
+                       "duration_s": alt.get("duration_s"),
+                       "geometry": alt.get("geometry") or [], "primary": False})
+    weights = [1.0 / max(float(r["duration_s"] or 1.0), 1.0) for r in routes]
+    total = sum(weights) or 1.0
+    for r, w in zip(routes, weights):
+        r["confidence"] = round(w / total, 4)
+        r["note"] = ("most direct road route consistent with the sightings"
+                     if r["primary"] else "alternative road route, also consistent")
+    return routes
 
 
 def _journey(nodes: list[dict], geo: dict, label: str) -> dict:
@@ -479,10 +518,17 @@ def reconstruct(detection_id: int, cameras: list[str] | None = None,
         "investigation": investigation,
         "signal_weights": SIGNAL_WEIGHTS,
         "primary": primary, "alternatives": alts[:3],
+        # Siting record per camera, including the viewing cone, so the map renders
+        # from the SAME stored geometry the reconstruction used.
         "camera_geo": {k: {"lat": v.get("lat"), "lon": v.get("lon"), "name": v.get("name"),
                            "address": v.get("address"), "road_name": v.get("road_name"),
                            "facing_deg": v.get("facing_deg"), "fov_deg": v.get("fov_deg"),
-                           "coverage_m": v.get("coverage_m")}
+                           "coverage_m": v.get("coverage_m"),
+                           "facing": camera_registry.compass_name(v.get("facing_deg")),
+                           "coverage_cone": camera_registry.coverage_cone(v),
+                           "cone_estimated": bool(v.get("facing_deg") is not None
+                                                  and (v.get("fov_deg") is None
+                                                       or v.get("coverage_m") is None))}
                        for k, v in geo.items()},
         "registry": camera_registry.registry_status(),
         "route_engine": {"active": routing.get_engine().name,
