@@ -10,6 +10,8 @@ copy of the embedding) and only removed on explicit delete.
 from __future__ import annotations
 
 import base64
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
@@ -83,7 +85,17 @@ class _FrameReader:
     """Seeks and reads FULL-RESOLUTION frames straight from the source video.
 
     Face extraction must never reuse the tiny stored person crops (they are only
-    ~90px wide), so every candidate frame is decoded from the original video."""
+    ~90px wide), so every candidate frame is decoded from the original video.
+
+    Reading strategy: one explicit seek per frame. This costs ~128 ms per frame on
+    1080p CCTV because the decoder re-finds the preceding keyframe every time, and
+    decode-skipping forward with grab() between nearby candidates measured 3.7x
+    faster. It is NOT used: on these recordings cv2 seeks are not reliably
+    frame-exact, so a skip count derived from the post-seek position drifts, and a
+    measured 15-63% of frames came back as a DIFFERENT frame than the seek path
+    returned. A faster reader that quietly examines different pixels would change
+    which face is chosen, so the exact-but-slower seek is kept. Repeat saves avoid
+    the scan entirely instead (see _save_from_cache)."""
 
     def __init__(self, video_path):
         self.cap = cv2.VideoCapture(str(video_path)) if video_path else None
@@ -121,9 +133,16 @@ def _expanded_from_full_frame(frame, det: dict):
     return (crop if (crop is not None and crop.size) else None), (x1, y1)
 
 
-def expanded_crop_url(detection_id: int) -> str | None:
+def expanded_crop_url(detection_id: int, generate: bool = True) -> str | None:
     """Cache + return a /media URL for the EXPANDED person crop (display).
-    Cheap: pure image crop, no AI."""
+
+    No AI, but building one DECODES a frame from the source video, which is far
+    from free. `generate=False` serves the cached image if it exists and otherwise
+    falls straight back to the stored crop: a search returns up to 60 results
+    whose thumbnails all render at once, and opening/seeking the source file 60
+    times over starved the video element's own range requests, which is what made
+    the clip take seconds to appear. The selected result still gets the full
+    expanded crop (generate=True)."""
     refs = database.get_detections([detection_id])
     if not refs:
         return None
@@ -131,6 +150,8 @@ def expanded_crop_url(detection_id: int) -> str | None:
     out = config.EXPANDED_CROP_DIR / f"exp_{detection_id}.jpg"
     if out.exists():
         return media_url(str(out))
+    if not generate:
+        return media_url(det.get("crop_path"))
     # decode the ORIGINAL frame from the source video (stored crops are tiny)
     crop = None
     vpath = source_video_path(det.get("video_id"))
@@ -495,20 +516,51 @@ def _cache_get(video_id, track_id) -> dict | None:
     return dict(row) if row else None
 
 
+def _scan_fingerprint() -> str:
+    """Identifies the settings the best-face scan ran under. A cached winner is
+    only reused while this matches, so re-tuning any face threshold or weight
+    automatically invalidates the cache instead of serving a stale choice."""
+    import hashlib
+    parts = (config.FACE_TRACK_SCAN_FRAMES, config.FACE_MIN_DET_SCORE,
+             config.FACE_ACCEPT_QUALITY, config.FACE_ACCEPT_MIN_PX,
+             config.FACE_BOX_EXPAND, config.FACE_LOW_QUALITY_THRESHOLD,
+             config.FACE_Q_W_DET, config.FACE_Q_W_SIZE, config.FACE_Q_W_SHARP,
+             config.FACE_Q_W_POSE, config.FACE_Q_W_EYES, config.FACE_Q_W_BRIGHT,
+             config.FACE_Q_W_OCCL, config.FACE_Q_W_NOISE)
+    return hashlib.sha1(repr(parts).encode()).hexdigest()[:12]
+
+
 def _cache_put(video_id, track_id, found, arts, scan) -> None:
     import json
     metrics = {k: found.get(k) for k in
                ("det_score", "face_size", "resolution", "sharpness", "frontal",
                 "eyes", "brightness", "occlusion", "noise")}
+    # Everything a later SAVE needs, so it never has to repeat the scan that has
+    # already picked this face. Not exposed to the UI.
+    payload = None
+    try:
+        f = found.get("insight")
+        if f is not None and getattr(f, "normed_embedding", None) is not None:
+            payload = json.dumps({
+                "scan_fp": _scan_fingerprint(),
+                "embedding": _encode_emb(np.asarray(f.normed_embedding, dtype="float32")),
+                "age": int(f.age) if getattr(f, "age", None) is not None else None,
+                "camera_id": found.get("camera_id"), "timestamp": found.get("timestamp"),
+                "frame_number": found.get("frame_number"), "reason": found.get("reason"),
+                "face_px": arts.get("face_px"),
+                "frames_seen": scan.get("frames_seen"), "faces_seen": scan.get("faces_seen"),
+            })
+    except Exception:
+        payload = None
     with database.get_conn() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO track_best_face (video_id, track_id, detection_id, quality, "
-            " low_quality, face_crop, preview_crop, person_crop, metrics, frames_seen, faces_seen, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            " low_quality, face_crop, preview_crop, person_crop, metrics, frames_seen, faces_seen, "
+            " created_at, save_payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (video_id, track_id, found["detection_id"], found["quality"],
              1 if found.get("low_quality") else 0, arts.get("face"), arts.get("preview"),
              arts.get("profile"), json.dumps(metrics), scan.get("frames_seen"),
-             scan.get("faces_seen"), database._now()))
+             scan.get("faces_seen"), database._now(), payload))
 
 
 def _log_selection(video_id, track_id, found, arts, scan) -> None:
@@ -534,7 +586,7 @@ def _log_selection(video_id, track_id, found, arts, scan) -> None:
         pass
 
 
-def _preview_from_cache(cached: dict, detection_id: int) -> dict:
+def _preview_from_cache(cached: dict, detection_id: int, generate: bool = True) -> dict:
     import json
     try:
         metrics = json.loads(cached.get("metrics") or "{}")
@@ -543,7 +595,8 @@ def _preview_from_cache(cached: dict, detection_id: int) -> dict:
     return {"available": True, "source": "track-best (cached)",
             "face_id": None, "detection_id": cached.get("detection_id"),
             "camera_id": None, "timestamp": None,
-            "person_crop_url": media_url(cached.get("person_crop")) or expanded_crop_url(detection_id),
+            "person_crop_url": media_url(cached.get("person_crop"))
+                               or expanded_crop_url(detection_id, generate=generate),
             "face_crop_url": media_url(cached.get("face_crop")),
             "preview_crop_url": media_url(cached.get("preview_crop")),
             "quality": cached.get("quality"),
@@ -552,13 +605,18 @@ def _preview_from_cache(cached: dict, detection_id: int) -> dict:
             **metrics}
 
 
-def best_face_for_detection(detection_id: int, deep: bool = True) -> dict | None:
+def best_face_for_detection(detection_id: int, deep: bool = True,
+                            generate: bool | None = None) -> dict | None:
     """Best face for the PERSON that `detection_id` belongs to.
 
     deep=True  -> scan the whole track from the ORIGINAL frames (recovers faces the
                   tight stored crops miss).
-    deep=False -> fast preview only from faces already stored at ingest time.
+    deep=False -> fast preview only from faces already stored at ingest time. This
+                  is the search-result thumbnail path, called once per result, so
+                  it must not decode video (see expanded_crop_url).
     Returns a preview dict, or None when the entire track has no usable face."""
+    if generate is None:
+        generate = deep
     refs = database.get_detections([detection_id])
     if not refs:
         return None
@@ -575,7 +633,7 @@ def best_face_for_detection(detection_id: int, deep: bool = True) -> dict | None
     # (this is what lets search results show the BEST face, not the first one).
     cached = _cache_get(vid, tid)
     if cached and cached.get("face_crop"):
-        return _preview_from_cache(cached, detection_id)
+        return _preview_from_cache(cached, detection_id, generate=generate)
 
     if not deep:
         # preview only: never scan. No stored face -> report unavailable.
@@ -586,7 +644,7 @@ def best_face_for_detection(detection_id: int, deep: bool = True) -> dict | None
                 "detection_id": best["detection_id"], "camera_id": best.get("camera_id"),
                 "timestamp": best.get("timestamp"), "gender": best.get("gender"),
                 "age": best.get("age"),
-                "person_crop_url": expanded_crop_url(detection_id),
+                "person_crop_url": expanded_crop_url(detection_id, generate=generate),
                 "face_crop_url": media_url(best.get("crop_path")),
                 "quality": round(min(1.0, _sharpness(best.get("crop_path")) / 300.0), 3)}
 
@@ -600,7 +658,7 @@ def best_face_for_detection(detection_id: int, deep: bool = True) -> dict | None
                     "detection_id": best["detection_id"], "camera_id": best.get("camera_id"),
                     "timestamp": best.get("timestamp"), "gender": best.get("gender"),
                     "age": best.get("age"),
-                    "person_crop_url": expanded_crop_url(detection_id),
+                    "person_crop_url": expanded_crop_url(detection_id, generate=generate),
                     "face_crop_url": media_url(best.get("crop_path")),
                     "quality": round(min(1.0, _sharpness(best.get("crop_path")) / 300.0), 3)}
         return None
@@ -610,8 +668,9 @@ def best_face_for_detection(detection_id: int, deep: bool = True) -> dict | None
     arts = _write_face_artifacts(vid, found, f"t{vid}_{tid}")
     try:
         _cache_put(vid, tid, found, arts, scan)
-    except Exception:
-        pass
+    except Exception as exc:                    # cache is optional, but never silent:
+        print(f"[face] WARNING: best-face cache write failed for "
+              f"video {vid} track {tid}: {exc}")
     _log_selection(vid, tid, found, arts, scan)
 
     f = found["insight"]
@@ -695,6 +754,122 @@ def _row_urls(row: dict) -> dict:
     return d
 
 
+def _save_from_cache(video_id, track_id, investigation) -> dict | None:
+    """Write a saved_faces row from the cached best-face decision for this track.
+
+    Returns None (so the caller performs the normal scan) unless the cache holds a
+    winner picked under the CURRENT settings, with its embedding and its face image
+    still on disk."""
+    import json
+    cached = _cache_get(video_id, track_id)
+    if not cached or not cached.get("save_payload") or not cached.get("face_crop"):
+        return None
+    if not Path(cached["face_crop"]).exists():
+        return None
+    try:
+        pl = json.loads(cached["save_payload"])
+    except Exception:
+        return None
+    if pl.get("scan_fp") != _scan_fingerprint() or not pl.get("embedding"):
+        return None
+
+    src_det = cached["detection_id"]
+    profile = cached.get("person_crop")
+    if not profile or not Path(profile).exists():
+        expanded_crop_url(src_det)                               # build it once
+        candidate = config.EXPANDED_CROP_DIR / f"exp_{src_det}.jpg"
+        profile = (str(candidate) if candidate.exists()
+                   else (database.get_detections([src_det]) or [{}])[0].get("crop_path"))
+
+    try:
+        metrics = json.loads(cached.get("metrics") or "{}")
+    except Exception:
+        metrics = {}
+    metrics.update(frames_seen=pl.get("frames_seen"), faces_seen=pl.get("faces_seen"),
+                   selected_frame=pl.get("frame_number"), selection_reason=pl.get("reason"),
+                   face_image_px=pl.get("face_px"), source="original-video",
+                   reused_track_scan=True)
+    with database.get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO saved_faces (face_id, detection_id, investigation, camera_id, "
+            " timestamp, confidence, face_crop, person_crop, embedding, gender, age, "
+            " created_at, preview_crop, low_quality, quality_metrics) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (None, src_det, investigation, pl.get("camera_id"),
+             pl.get("timestamp"), cached.get("quality"), cached.get("face_crop"), profile,
+             pl["embedding"], None, pl.get("age"), database._now(),
+             cached.get("preview_crop"), 1 if cached.get("low_quality") else 0,
+             json.dumps(metrics)))
+        saved_id = cur.lastrowid
+        row = dict(conn.execute("SELECT * FROM saved_faces WHERE saved_id=?", (saved_id,)).fetchone())
+    if config.FACE_DIAG_LOG:
+        print(f"[face] track {track_id} (video {video_id}) -> saved #{saved_id} from the "
+              f"cached best-face decision (frame {pl.get('frame_number')}, "
+              f"q={cached.get('quality')}); no rescan needed")
+    return _row_urls(row)
+
+
+# ------------------------------------------------- warm the best-face decision early
+# Choosing the best face costs ~19 s per track (measured: 45% seeking/decoding 60
+# full-resolution frames, 54% InsightFace). That is inherent to the method and is
+# not something to trim by looking at fewer or smaller frames. Instead the SAME
+# work is started as soon as the investigator opens a person, so by the time they
+# press "Save Face" the decision is already cached and saving is instant.
+#
+# One worker only: the scan is GPU work on a 6 GB card and must not contend with
+# ingestion or with another scan.
+_prep_lock = threading.Lock()
+_prep_inflight: set[tuple] = set()
+# Tracks already scanned in this process. Needed because a track with NO usable
+# face caches nothing (by design - a poor face is never stored), so without this
+# every reopen would pay for the same fruitless 19 s scan again.
+_prep_done: set[tuple] = set()
+_prep_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="face-prep")
+
+
+def _prep_worker(video_id, track_id, detection_id) -> None:
+    try:
+        best_face_for_detection(detection_id, deep=True)
+    except Exception as exc:                     # never take the server down
+        print(f"[face] prepare failed for video {video_id} track {track_id}: {exc}")
+    finally:
+        with _prep_lock:
+            _prep_inflight.discard((video_id, track_id))
+            _prep_done.add((video_id, track_id))
+
+
+def prepare_best_face(detection_id: int) -> dict:
+    """Start (or report) the best-face scan for this person's track.
+
+    Returns immediately. Identical work to the on-click path - same frames, same
+    scoring, same winner - just started earlier and de-duplicated so two clicks
+    can never scan the same track twice at once."""
+    refs = database.get_detections([detection_id])
+    if not refs:
+        return {"status": "unknown-detection"}
+    ref = refs[0]
+    vid, tid = ref.get("video_id"), ref.get("track_id")
+    if vid is None or tid is None:
+        return {"status": "no-track"}
+    if ref.get("class_label") not in _PERSON_LABELS:
+        return {"status": "not-a-person"}
+
+    cached = _cache_get(vid, tid)
+    if cached and cached.get("face_crop"):
+        return {"status": "ready", "video_id": vid, "track_id": tid}
+
+    key = (vid, tid)
+    with _prep_lock:
+        if key in _prep_inflight:
+            return {"status": "running", "video_id": vid, "track_id": tid}
+        if key in _prep_done:
+            # already scanned and nothing cleared the forensic quality bar
+            return {"status": "no-face", "video_id": vid, "track_id": tid}
+        _prep_inflight.add(key)
+    _prep_pool.submit(_prep_worker, vid, tid, detection_id)
+    return {"status": "started", "video_id": vid, "track_id": tid}
+
+
 # --------------------------------------------------------------- public API
 def save_face(detection_id: int, investigation: str | None = None) -> dict | None:
     """Permanently save the BEST face found anywhere in the person's track.
@@ -708,6 +883,16 @@ def save_face(detection_id: int, investigation: str | None = None) -> dict | Non
     import json
     ref = refs[0]
     vid, tid = ref.get("video_id"), ref.get("track_id")
+
+    # Fast path: this track's best face has ALREADY been chosen (e.g. the user
+    # opened the face preview first), and it was chosen under the same settings.
+    # Reuse that decision instead of decoding 60 full-resolution frames and
+    # re-running detection to arrive at the identical answer. Pure memoisation -
+    # the selection method, the frame examined and the stored metrics are the same.
+    reused = _save_from_cache(vid, tid, investigation)
+    if reused is not None:
+        return reused
+
     # Rank EVERY face in the track and take the best representative one.
     scan = rank_faces_in_track(vid, tid)
     found = scan["best"]
@@ -720,8 +905,9 @@ def save_face(detection_id: int, investigation: str | None = None) -> dict | Non
         arts = _write_face_artifacts(vid, found, f"t{vid}_{tid}")
         try:
             _cache_put(vid, tid, found, arts, scan)
-        except Exception:
-            pass
+        except Exception as exc:                # cache is optional, but never silent:
+            print(f"[face] WARNING: best-face cache write failed for "
+                  f"video {vid} track {tid}: {exc}")
         _log_selection(vid, tid, found, arts, scan)
         expanded_crop_url(src_det)                       # ensure the expanded crop exists
         profile = arts.get("profile") or str(config.EXPANDED_CROP_DIR / f"exp_{src_det}.jpg")

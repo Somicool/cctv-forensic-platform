@@ -17,13 +17,17 @@ def face_for_detection(detection_id: int, deep: bool = True):
     """Best available face for the person a search result belongs to.
 
     deep=True scans the whole ByteTrack track from the ORIGINAL frames (expanded
-    boxes), recovering faces that the tight stored crops miss."""
+    boxes), recovering faces that the tight stored crops miss.
+
+    deep=False is the search-result thumbnail path: it is called once per result,
+    so it must stay off the source video entirely (no frame decoding), otherwise
+    60 thumbnails compete with the video player for the same files."""
     best = faces_gallery.best_face_for_detection(detection_id, deep=deep)
     if best:
         return best
     return {"available": False,
             "reason": "No usable face found in this track.",
-            "person_crop_url": faces_gallery.expanded_crop_url(detection_id)}
+            "person_crop_url": faces_gallery.expanded_crop_url(detection_id, generate=deep)}
 
 
 @router.get("/face/expanded-crop/{detection_id}")
@@ -31,6 +35,17 @@ def expanded_crop(detection_id: int):
     """Context-padded person crop from the ORIGINAL frame (display). No AI."""
     return {"detection_id": detection_id,
             "person_crop_url": faces_gallery.expanded_crop_url(detection_id)}
+
+
+@router.post("/face/prepare/{detection_id}")
+def prepare_face(detection_id: int):
+    """Start choosing this person's best face now, in the background.
+
+    Picking the best face means decoding 60 full-resolution frames and running
+    face detection on each (~19 s). Called when a person result is opened, so the
+    work is already done when "Save Face" is pressed and saving is immediate. The
+    face chosen is exactly the same either way."""
+    return faces_gallery.prepare_best_face(detection_id)
 
 
 @router.post("/faces/save")
