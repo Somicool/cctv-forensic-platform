@@ -25,6 +25,10 @@ backend/data/expanded_crops/
 backend/data/_diag_anpr/
 backend/data/*.db
 backend/data/*.bak
+# Local safety copies taken before a destructive migration (scripts/*.py make
+# these). They contain a full cctv.db + FAISS indexes, so they must never be
+# committed - "backend/data/*.db" above only matches that one directory level.
+backend/data/backup_*/
 backend/data/vehicle_registry.json
 *.bak
 
