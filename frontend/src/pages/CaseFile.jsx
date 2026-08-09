@@ -4,7 +4,7 @@
 // previously created exports from the backend.
 import { useEffect, useMemo, useState } from 'react'
 import { useInvestigation } from '../context/investigation'
-import { createExport, getExports, listSavedFaces } from '../api'
+import { createExport, getExports, listSavedFaces, getCaseReports } from '../api'
 import { IcCase, IcClock } from '../components/icons'
 
 const fmtTs = (t) => (t ? t.replace('T', ' ').slice(0, 19) : '—')
@@ -30,11 +30,15 @@ export default function CaseFile() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+  // Generated evidence reports are listed here as a record. They are PRODUCED in the
+  // Evidence Gallery, per saved item, so an officer can pull the PDF for one exhibit.
+  const [reports, setReports] = useState([])
 
   async function load() {
-    const [e, f] = await Promise.allSettled([getExports(), listSavedFaces()])
+    const [e, f, r] = await Promise.allSettled([getExports(), listSavedFaces(), getCaseReports()])
     setExports(e.status === 'fulfilled' ? (e.value || []) : [])
     setFaces(f.status === 'fulfilled' ? (f.value || []) : [])
+    setReports(r.status === 'fulfilled' ? (r.value || []) : [])
   }
   useEffect(() => { load() }, [])
 
@@ -100,7 +104,7 @@ export default function CaseFile() {
         {/* evidence in this case */}
         <section className="fp-panel">
           <div className="fp-panel-title">
-            <span>Evidence in this case</span>
+            <span>Evidence in this case{caseInfo.caseNumber ? ` · ${caseInfo.caseNumber}` : ''}</span>
             <span className="muted">{evidence.length} item{evidence.length === 1 ? '' : 's'}</span>
           </div>
           {evidence.length === 0 ? (
@@ -166,9 +170,47 @@ export default function CaseFile() {
           </section>
 
           <section className="fp-panel" style={{ marginTop: 16 }}>
-            <div className="fp-panel-title"><span><IcClock size={16} /> Previous exports</span>
+            <div className="fp-panel-title"><span><IcCase size={16} /> Evidence reports</span>
+              <span className="muted">{reports.length}</span></div>
+            <div className="cf-note" style={{ marginTop: 0 }}>
+              Generate these in the <b>Evidence Gallery</b> — each saved item has its own
+              report button. A report includes the original frame with the subject outlined,
+              the matched image, a described account of the situation in that frame, the
+              camera's location and GPS, the real recording date and time, and the recorded
+              attributes and number plate.
+            </div>
+            {reports.length === 0 ? <div className="cf-empty small">No reports generated yet.</div>
+              : (
+                <div className="cf-exports">
+                  {reports.map((r) => (
+                    <div className="cf-exp" key={r.report_id}>
+                      <div className="cf-exp-top">
+                        <code>{r.report_id}</code>
+                        {r.available
+                          ? <a className="ws-btn-sm" href={r.download_url} target="_blank" rel="noreferrer">PDF</a>
+                          : <span className="muted small">file missing</span>}
+                      </div>
+                      <div className="cf-exp-meta">{r.case_number || '—'} · {r.officer || '—'}</div>
+                      <div className="cf-exp-meta">
+                        {r.export_id ? `sealed case ${r.export_id}` : 'working case'}
+                      </div>
+                      <div className="cf-exp-meta">{r.exhibit_count} exhibit{r.exhibit_count === 1 ? '' : 's'}
+                        {r.gemini_used ? ` · described by ${r.gemini_model}` : ' · attributes only'}</div>
+                      <div className="cf-exp-meta mono">{fmtDate(r.created_at)}</div>
+                      <div className="cf-exp-hash" title={r.sha256}>sha256 {(r.sha256 || '').slice(0, 24)}…</div>
+                    </div>
+                  ))}
+                </div>)}
+          </section>
+
+          <section className="fp-panel" style={{ marginTop: 16 }}>
+            <div className="fp-panel-title"><span><IcClock size={16} /> Sealed cases</span>
               <span className="muted">{exports.length}</span></div>
-            {exports.length === 0 ? <div className="cf-empty small">No exports yet.</div>
+            <div className="cf-note" style={{ marginTop: 0 }}>
+              Each sealed case keeps its own evidence set, packaged as a ZIP with a
+              SHA-256 manifest.
+            </div>
+            {exports.length === 0 ? <div className="cf-empty small">No sealed cases yet.</div>
               : (
                 <div className="cf-exports">
                   {exports.map((x) => (
@@ -177,7 +219,11 @@ export default function CaseFile() {
                         <code>{x.export_id}</code>
                         <a className="ws-btn-sm" href={x.download_url} download>ZIP</a>
                       </div>
-                      <div className="cf-exp-meta">{x.case_number} · {x.officer}</div>
+                      <div className="cf-exp-meta">{x.case_number || '—'} · {x.officer || '—'}</div>
+                      <div className="cf-exp-meta">
+                        {(x.detection_ids || []).length} exhibit
+                        {(x.detection_ids || []).length === 1 ? '' : 's'}
+                      </div>
                       <div className="cf-exp-meta mono">{fmtDate(x.created_at)}</div>
                       <div className="cf-exp-hash" title={x.manifest_hash}>
                         sha256 {(x.manifest_hash || '').slice(0, 24)}…</div>

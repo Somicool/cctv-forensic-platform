@@ -2,12 +2,12 @@
 // search matches + bookmarked/selected items (never every extracted frame).
 // Filter by category / camera / time / confidence; click a card for a detailed
 // evidence viewer. Uses existing backend fields only.
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useInvestigation } from '../context/investigation'
 import VideoPlayer from '../components/VideoPlayer'
 import TrackingViewer from '../components/TrackingViewer'
 import VehicleInfo from '../components/VehicleInfo'
-import { trackDetection } from '../api'
+import { trackDetection, createCaseReport, getCaseReports } from '../api'
 import { IcEvidence, IcSearch } from '../components/icons'
 
 const VEHICLES = new Set(['car', 'truck', 'bus', 'motorcycle', 'bicycle', 'van', 'auto'])
@@ -29,7 +29,7 @@ function kindsOf(r) {
 }
 
 export default function Evidence() {
-  const { evidence, inEvidence, toggleEvidence } = useInvestigation()
+  const { evidence, inEvidence, toggleEvidence, caseInfo } = useInvestigation()
 
   const [cats, setCats] = useState(new Set())
   const [camera, setCamera] = useState('')
@@ -37,6 +37,42 @@ export default function Evidence() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [detail, setDetail] = useState(null)
+
+  // --- per-evidence PDF report -------------------------------------------
+  // Same generator as before, just scoped to a single exhibit: the report covers
+  // only the detection on that card. `building` holds the detection_id in progress
+  // so each card shows its own state.
+  const [reports, setReports] = useState([])
+  const [building, setBuilding] = useState(null)
+  const [reportError, setReportError] = useState(null)
+  const [reportOk, setReportOk] = useState(null)
+
+  const loadReports = useCallback(async () => {
+    try { setReports(await getCaseReports() || []) } catch { /* listing is optional */ }
+  }, [])
+  useEffect(() => { loadReports() }, [loadReports])
+
+  // Newest single-exhibit report per detection, so a card can offer the existing
+  // PDF instead of regenerating it.
+  const reportFor = useMemo(() => {
+    const m = {}
+    for (const r of reports) {
+      const d = r.single_detection_id
+      if (d != null && r.available && !m[d]) m[d] = r
+    }
+    return m
+  }, [reports])
+
+  const buildFor = useCallback(async (r) => {
+    setReportError(null); setReportOk(null); setBuilding(r.detection_id)
+    try {
+      const rec = await createCaseReport({ detectionIds: [r.detection_id], caseInfo })
+      setReportOk(rec); loadReports()
+    } catch (e) {
+      setReportError(e?.response?.data?.detail || e.message
+        || `Report generation failed for evidence ${r.detection_id}`)
+    } finally { setBuilding(null) }
+  }, [caseInfo, loadReports])
 
   // Only items the investigator explicitly added to evidence (bookmarked with
   // the ＋ button) - never raw search matches or every extracted frame.
@@ -95,6 +131,32 @@ export default function Evidence() {
         <span className="eg-count">{filtered.length} of {items.length} item{items.length === 1 ? '' : 's'}</span>
       </div>
 
+      {building && (
+        <div className="cf-alert info">
+          Building the evidence report for detection <b>{building}</b> — extracting the
+          original frame it was found in and writing its situational description.
+          This takes a few seconds.
+        </div>
+      )}
+      {reportError && <div className="cf-alert err">{reportError}</div>}
+      {reportOk && (
+        <div className="cf-alert ok">
+          <b>Evidence report ready.</b> <code>{reportOk.report_id}</code> ·{' '}
+          {reportOk.gemini_described
+            ? `described by ${reportOk.gemini_model}`
+            : 'recorded attributes only'} · SHA-256{' '}
+          <code className="cf-hash">{reportOk.sha256}</code>
+          <a className="ws-btn-sm" style={{ marginLeft: 10 }} href={reportOk.download_url}
+             target="_blank" rel="noreferrer">Open PDF</a>
+          {!reportOk.gemini_described && reportOk.gemini_error && (
+            <div style={{ marginTop: 6 }}>
+              Situational description was skipped — {reportOk.gemini_error}. The images
+              and recorded particulars are complete.
+            </div>
+          )}
+        </div>
+      )}
+
       {items.length === 0 ? (
         <div className="fp-panel">
           <div className="fp-empty">
@@ -120,19 +182,36 @@ export default function Evidence() {
                 <div className="eg-conf">conf {Math.round((r.confidence || 0) * 100)}%</div>
                 <div className="ws-rc-ts">{fmtTs(r.timestamp)}</div>
               </div>
+              {/* Report for THIS piece of evidence only. Stops the click from
+                  opening the detail viewer behind the button. */}
+              <div className="eg-rc-report" onClick={(e) => e.stopPropagation()}>
+                {reportFor[r.detection_id] && (
+                  <a className="ws-btn-sm" href={reportFor[r.detection_id].download_url}
+                     target="_blank" rel="noreferrer">⤓ Open PDF</a>
+                )}
+                <button className="ws-btn-sm" onClick={() => buildFor(r)} disabled={!!building}
+                        title="Evidence report PDF for this item: the original frame it was found in, the matched image, a situational description and every recorded particular">
+                  {building === r.detection_id
+                    ? 'Generating…'
+                    : (reportFor[r.detection_id] ? 'Regenerate PDF' : '⤓ Evidence Report PDF')}
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
 
       {detail && <EvidenceViewer item={detail} onClose={() => setDetail(null)}
-        inEvidence={inEvidence} toggleEvidence={toggleEvidence} />}
+        inEvidence={inEvidence} toggleEvidence={toggleEvidence}
+        report={reportFor[detail.detection_id]} building={building === detail.detection_id}
+        onBuildReport={() => buildFor(detail)} />}
     </div>
   )
 }
 
 /* ---------------------------- detailed evidence viewer ---------------------------- */
-function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence }) {
+function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence,
+                         report, building, onBuildReport }) {
   const [track, setTrack] = useState(null)
   const [tracing, setTracing] = useState(false)
   const [showTrack, setShowTrack] = useState(false)
@@ -179,6 +258,12 @@ function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence }) {
               {a.plate_text && <button className="ws-btn-sm" onClick={() => setShowReg(true)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
               <button className="ws-btn-sm" onClick={trace} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
               {item.crop_url && <a className="ws-btn-sm" href={item.crop_url} download>Download crop</a>}
+              <button className="ws-btn-sm" onClick={onBuildReport} disabled={building}
+                      title="Evidence report PDF for this item only">
+                {building ? 'Generating…' : (report ? 'Regenerate PDF' : '⤓ Evidence Report PDF')}
+              </button>
+              {report && <a className="ws-btn-sm" href={report.download_url}
+                            target="_blank" rel="noreferrer">⤓ Open PDF</a>}
             </div>
           </div>
         </div>

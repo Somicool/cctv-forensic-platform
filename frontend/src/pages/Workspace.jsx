@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getLibrary, getVideos, getCameras, ingestAll, getIngestJob, stopIngest, uploadVideo,
   deleteVideo, searchText, searchPlate, trackDetection, createExport, logActivity, saveFace,
-  getFaceForDetection, reconstructJourney, listCameraRegistry, saveRegistryCamera,
+  getFaceForDetection, prepareFace, reconstructJourney, listCameraRegistry, saveRegistryCamera,
   reprocessVideos,
 } from '../api'
 import { useNavigate } from 'react-router-dom'
@@ -204,6 +204,9 @@ export default function Workspace() {
     openClip(v)
   }
   function pickResult(r) {
+    // Opening a person starts the best-face scan in the background, so pressing
+    // "Save Face" later is instant rather than waiting on ~19s of frame decoding.
+    if (r?.class_label === 'person' && r.detection_id != null) prepareFace(r.detection_id)
     setCurrent({ key: r.video_url, videoId: r.video_id, src: r.video_url, offset: r.offset_seconds || 0,
       bbox: r.bbox, frameW: r.frame_width, frameH: r.frame_height, item: r,
       title: `${r.class_label}  ·  ${camLabel(r.camera_id)}`,
