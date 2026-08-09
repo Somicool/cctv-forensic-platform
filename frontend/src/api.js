@@ -311,3 +311,63 @@ export async function getExports() {
   const { data } = await api.get('/exports')
   return data
 }
+
+// ---------------------------------------------------------------- Case File
+// The evidence set and case details are stored server-side in SQLite so a case
+// survives a page refresh and a backend restart (they used to be React-only).
+export async function loadCase(caseKey) {
+  const { data } = await api.get('/case', { params: caseKey ? { case_key: caseKey } : {} })
+  return data
+}
+
+export async function saveCaseEvidence(items, caseKey) {
+  const { data } = await api.put('/case/evidence', { items, case_key: caseKey })
+  return data
+}
+
+export async function saveCaseInfo(caseInfo, caseKey) {
+  const { data } = await api.put('/case/info', { case_info: caseInfo, case_key: caseKey })
+  return data
+}
+
+// Start choosing a person's best face in the background as soon as their result
+// is opened. Picking it needs ~19s of frame decoding + face detection, so doing
+// it here means "Save Face" is instant instead of blocking on the same work.
+// Fire-and-forget: failures are harmless, Save Face just does the work itself.
+export async function prepareFace(detectionId) {
+  try {
+    const { data } = await api.post(`/face/prepare/${detectionId}`)
+    return data
+  } catch {
+    return null
+  }
+}
+
+// ---- Case File evidence report (PDF, Gemini-narrated) ----
+// Builds the report server-side: original frame with the subject outlined, the
+// matched close-up, a situational description per exhibit, and every recorded
+// particular. Can take a while - a vision call is made per exhibit.
+// `detectionIds` limits the report to specific exhibits (one saved evidence item,
+// for example). Omit it to report on the whole saved case.
+export async function createCaseReport({ caseKey, caseInfo, detectionIds, useGemini = true } = {}) {
+  const { data } = await api.post('/case/report', {
+    case_key: caseKey, case_info: caseInfo, detection_ids: detectionIds,
+    use_gemini: useGemini,
+  }, { timeout: 600000 })
+  return data
+}
+
+// Report for a case that was already sealed as an export. Uses that export's own
+// case number, officer and filed detections, so any past case can be pulled as a PDF.
+export async function createReportForExport(exportId, useGemini = true) {
+  const { data } = await api.post(`/case/report/for-export/${exportId}`,
+    { use_gemini: useGemini }, { timeout: 600000 })
+  return data
+}
+
+export async function getCaseReports(caseKey) {
+  const { data } = await api.get('/case/reports', {
+    params: caseKey ? { case_key: caseKey } : {},
+  })
+  return data
+}
