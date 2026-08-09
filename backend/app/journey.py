@@ -387,6 +387,11 @@ def _nodes_from_candidates(match: dict, accept: float) -> list[dict]:
         # gating on it would silently shift the calibrated operating point.
         if c["identity"] < accept or c.get("camera_id") == ref.get("camera_id"):
             continue                                  # reference camera already added
+        if c.get("ambiguous"):
+            # Two candidates in this camera are inseparable on the evidence. Naming
+            # one as the journey would be a confidently wrong identity; it stays in
+            # the candidate list for the investigator to judge instead.
+            continue
         sig = c.get("signals") or {}
         nodes.append({
             "detection_id": c.get("detection_id"), "camera_id": c.get("camera_id"),

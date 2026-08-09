@@ -73,6 +73,14 @@ COLOUR_NEIGHBOURS = (
     {"yellow", "orange", "beige", "gold"},
 )
 NEAR_COLOUR_SCORE = 0.6
+# A voted colour label is only evidence if the vote was reasonably consistent.
+# Audited on the four-camera footage: voted confidences of 0.375-0.5 are common
+# (the label was the majority in under half the frames), and one track flipped
+# orange -> white mid-track. Feeding a coin-flip label in as hard 0.0/1.0 evidence
+# actively drove correct candidates DOWN, which is the light-clothing failure. Below
+# this confidence the colour is reported as UNAVAILABLE and the fusion engine
+# renormalises over the signals it can actually trust.
+COLOUR_MIN_CONF = 0.45
 
 
 def tier(identity: float) -> str:
@@ -393,16 +401,27 @@ def _colour_pair(x: str, y: str) -> float:
     return 0.0
 
 
+_CONF_KEY = {"upper_color": "upper_conf", "lower_color": "lower_conf"}
+
+
 def _garment_sim(a, b, key: str) -> float | None:
     """Graded clothing-colour agreement for ONE garment (upper or lower).
 
     Not a strict equality test: black/grey and white/beige are routinely swapped
     between cameras with different exposure, so near colours count as a partial
-    match instead of a hard mismatch. Upper and lower are scored separately so the
-    fusion engine can treat them as two pieces of evidence."""
+    match instead of a hard mismatch.
+
+    Returns None - meaning "no evidence", not "mismatch" - when either side's voted
+    colour was not consistent enough to rely on (see COLOUR_MIN_CONF). That is the
+    important part: an unreliable label must not be able to veto a correct match."""
     x, y = a.get(key), b.get(key)
     if not x or not y:
         return None
+    ck = _CONF_KEY.get(key)
+    if ck:
+        ca, cb = a.get(ck), b.get(ck)
+        if (ca is not None and ca < COLOUR_MIN_CONF) or (cb is not None and cb < COLOUR_MIN_CONF):
+            return None
     return _colour_pair(str(x).lower(), str(y).lower())
 
 
@@ -462,6 +481,18 @@ def appearance_evidence(a: dict, b: dict) -> dict:
         s = fn(a, b)
         if s is not None:
             ev[name] = s
+
+    # De-duplicate the clothing colours. Audited on real tracks, the attribute
+    # extractor returns the SAME dominant colour for upper and lower on almost every
+    # person (white/white, orange/orange, green/green...), so it is one measurement
+    # reported twice. Counting it twice gave colour 0.18 of the appearance weight
+    # while supplying a single noisy feature, and let one bad label outvote ReID.
+    # When both descriptors show upper == lower, keep it as ONE signal.
+    if "upper_color" in ev and "lower_color" in ev:
+        same_a = a.get("upper_color") and a.get("upper_color") == a.get("lower_color")
+        same_b = b.get("upper_color") and b.get("upper_color") == b.get("lower_color")
+        if same_a and same_b:
+            ev.pop("lower_color")
     return ev
 
 

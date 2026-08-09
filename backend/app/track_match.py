@@ -23,6 +23,12 @@ MAX_GAP_S = 3600.0            # cameras more than this apart in time are deprior
 MAX_KMH = 60.0                # faster than this between two cameras is implausible
 WALK_KMH, CYCLE_KMH = 7.0, 25.0
 TOP_K = 5                     # candidate tracks returned per camera
+# Two candidates in one camera this close in fused identity cannot be separated by
+# the available evidence. Audited on the four-camera footage, margins of 0.02-0.04
+# occurred repeatedly and the top one was being asserted silently - which is exactly
+# how a confidently WRONG person gets reported. Such a camera is now flagged
+# ambiguous and never asserted as part of the journey.
+AMBIGUOUS_MARGIN = 0.05
 # final confidence = identity x (base + span * spatio-temporal plausibility)
 ST_BASE, ST_SPAN = 0.72, 0.28
 
@@ -284,6 +290,18 @@ def find_candidates(video_id: int, track_id: int, cameras=None, top_k: int = TOP
     for cam, items in per_cam.items():
         top = dict(items[0])
         top["camera_alternatives"] = items[1:top_k]
+        # --- ambiguity check (never assert a near-tie) ----------------------
+        runner = items[1] if len(items) > 1 else None
+        margin = round(top["identity"] - runner["identity"], 4) if runner else None
+        top["margin"] = margin
+        top["ambiguous"] = bool(margin is not None and margin < AMBIGUOUS_MARGIN)
+        if top["ambiguous"]:
+            top["tier"] = "ambiguous"
+            top["ambiguity"] = (
+                f"{top['identity']:.2f} vs {runner['identity']:.2f} for track "
+                f"{runner['track_id']} - the evidence cannot separate them")
+            top["reasons"] = ["AMBIGUOUS: two candidates score within "
+                              f"{AMBIGUOUS_MARGIN:.2f}"] + (top.get("reasons") or [])
         best_per_camera.append(top)
     best_per_camera.sort(key=lambda r: r["confidence"], reverse=True)
 
