@@ -124,6 +124,18 @@ def ingest_video(video_path, camera_id=None, start_time=None, fps=None,
     cap.release()
     if native_fps <= 0:
         native_fps = 30.0
+
+    # Real-world recording time. Without this every detection timestamp fell back
+    # to "now" (the tracker's default), so evidence and saved faces were stamped
+    # with the INGESTION time instead of when the footage was actually recorded -
+    # and clips ingested on different days sat hours apart on the journey
+    # timeline. recording_meta prefers a timestamp in the filename, then the
+    # camera's own creation time inside the container, then the file mtime.
+    if start_time is None:
+        start_time = recording_meta.parse_start_time(video_path).isoformat()
+        print(f"[ingest] {video_path.name}: recording start {start_time} "
+              f"(source: {recording_meta.start_time_source(video_path)})")
+
     duration = round(total_frames / native_fps, 3) if total_frames else None
     end_time = None
     if start_time and duration is not None:
