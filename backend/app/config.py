@@ -298,6 +298,16 @@ PADDLE_LANG = "en"
 GEMINI_ENABLED = True                       # master switch; still a no-op without a key
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"       # env var holding the API key
 GEMINI_MODEL = "gemini-flash-lite-latest"
+
+# --- Gemini narration for the Case File evidence report (app/gemini_report.py) ---
+# Separate model + switch from the plate fallback above: the report needs written
+# scene description rather than a few OCR characters, so it uses the fuller flash
+# model. Empty string -> fall back to GEMINI_MODEL. Turning this off only removes
+# the narrative; the report still builds from stored attributes.
+GEMINI_REPORT_ENABLED = True
+GEMINI_REPORT_MODEL = "gemini-flash-latest"
+GEMINI_REPORT_TIMEOUT = 60                   # seconds per request
+GEMINI_REPORT_WORKERS = 4                    # exhibits described concurrently
 PLATE_GEMINI_CONF = 0.55                     # PaddleOCR best-conf below this -> try Gemini
                                             # (only once per vehicle track, key permitting)
 
