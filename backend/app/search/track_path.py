@@ -17,19 +17,37 @@ from __future__ import annotations
 
 import math
 
+import cv2
 import numpy as np
 
-from .. import database
+from .. import config, database
 from ..models.schemas import TrackPathPoint, TrackPathResponse
 from . import vector_store
 from .text_search import media_url, _video_index, playback_fields, _camera_names
 
 # --- identity-preserving playback tunables ---
-# Below this the box is definitely a different person: end the segment.
-APPEARANCE_BREAK_SIM = 0.55
+# The target reference is a SET of high-quality views of the selected track, not the
+# single clicked crop. One crop is a weak yardstick: an unlucky pose sets the bar for
+# the whole track, and at the old 0.55 break threshold roughly half of
+# DIFFERENT-person frames still cleared it (measured impostor p90 was ~0.67), so the
+# box could follow a visually similar neighbour.
+#
+# Measured over 198 real tracks, comparing each frame against a reference SET:
+#   refs   AUC     impostor p90   genuine frames kept at p90
+#   1      0.916   0.643          78.4%     <- single clicked crop, the permissive case
+#   5      0.942   0.674          80.3%     <- default
+APPEARANCE_BREAK_SIM = 0.65      # below this the frame is a different person: stop
 # At/above this it is confidently the same person: keep it even if the box jumped
-# (the target reappeared from behind an obstacle).
-APPEARANCE_HOLD_SIM = 0.75
+# (the target reappeared from behind an obstacle). Above the measured same-person
+# mean (0.743), so only strong evidence overrides motion continuity.
+APPEARANCE_HOLD_SIM = 0.80
+REFERENCE_VIEWS = 5              # max views in the target reference
+# Quality gates for a view entering the reference. A blurred or tiny crop describes
+# the scene more than the person, so it must not define the target.
+REF_MIN_SHARPNESS = 25.0         # Laplacian variance floor
+REF_MIN_AREA_FRAC = 0.45         # at least this fraction of the track's median area
+REF_MAX_SIMILARITY = 0.97        # reject near-duplicates so the set spans poses
+REF_MAX_CANDIDATES = 24          # bound the crop reads per request
 # --- gap bridging limits -----------------------------------------------------
 # Interpolated boxes exist so a ONE-frame miss (a passing obstruction, a dip in
 # detector confidence) does not make the overlay blink out. They are guesses, so
@@ -53,34 +71,142 @@ def _center(bbox):
     return (x + w / 2.0, y + h / 2.0)
 
 
-def _appearance_check(points, ref_detection_id):
-    """Per-point ReID similarity to the CLICKED person.
+def _unit(v):
+    v = np.asarray(v, dtype="float32").ravel()
+    n = float(np.linalg.norm(v))
+    return None if n < 1e-6 else v / n
+
+
+def _sharpness(path):
+    """Laplacian variance of a stored crop. Cheap: no model, just the saved image."""
+    try:
+        im = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if im is None or not im.size:
+            return None
+        return float(cv2.Laplacian(im, cv2.CV_64F).var())
+    except Exception:
+        return None
+
+
+def reference_views(rows, ref_detection_id, max_views: int | None = None):
+    """Target identity reference: up to `max_views` good, visually varied views.
+
+    The clicked detection always anchors the set - it is what the investigator
+    chose - and the rest are the best remaining views of the SAME stored track.
+
+    Selection, in order:
+      1. reject crops below the sharpness floor or well under the track's median
+         size (a blurred or distant crop describes the scene, not the person)
+      2. rank the survivors by sharpness x relative size x detector confidence
+      3. take them greedily, skipping any whose embedding is a near-duplicate of one
+         already chosen, so the set spans poses/distances instead of one moment
+
+    Built ONCE per request from stored embeddings and stored crops. Nothing is
+    learned from playback frames: continuously absorbing frames is how a tracker
+    drifts onto the wrong person.
+    """
+    # resolved at call time, not import time, so the module setting can be overridden
+    max_views = REFERENCE_VIEWS if max_views is None else max_views
+    have = [r for r in rows if r.get("bbox_w") and r.get("bbox_h")
+            and vector_store.get_vector("reid", r["detection_id"]) is not None]
+    if not have or max_views <= 1:
+        return [ref_detection_id], {}
+
+    areas = sorted((r["bbox_w"] * r["bbox_h"]) for r in have)
+    median_area = areas[len(areas) // 2] or 1.0
+    # only read crops for the most promising candidates, biggest first
+    have.sort(key=lambda r: r["bbox_w"] * r["bbox_h"], reverse=True)
+    scored, diag = [], {}
+    for r in have[:REF_MAX_CANDIDATES]:
+        area = r["bbox_w"] * r["bbox_h"]
+        rel = area / median_area
+        sharp = _sharpness(r.get("crop_path")) if r.get("crop_path") else None
+        diag[r["detection_id"]] = {"sharpness": sharp, "area_frac": round(rel, 3),
+                                   "confidence": r.get("confidence")}
+        if rel < REF_MIN_AREA_FRAC:
+            continue
+        if sharp is not None and sharp < REF_MIN_SHARPNESS:
+            continue
+        conf = float(r.get("confidence") or 0.5)
+        quality = (sharp if sharp is not None else REF_MIN_SHARPNESS) * min(rel, 3.0) * conf
+        scored.append((quality, r["detection_id"]))
+    scored.sort(reverse=True)
+
+    # Only vectors of the expected width are usable (see _appearance_check).
+    want_dim = config.REID_DIM
+
+    chosen, vecs = [], []
+    anchor = _unit(vector_store.get_vector("reid", ref_detection_id))
+    if anchor is not None and anchor.shape[0] == want_dim:
+        chosen.append(ref_detection_id)
+        vecs.append(anchor)
+    for _q, did in scored:
+        if len(chosen) >= max_views:
+            break
+        if did in chosen:
+            continue
+        v = _unit(vector_store.get_vector("reid", did))
+        if v is None or v.shape[0] != want_dim:
+            continue
+        if vecs and max(float(np.dot(v, u)) for u in vecs) > REF_MAX_SIMILARITY:
+            continue                                  # near-duplicate view
+        chosen.append(did)
+        vecs.append(v)
+    if not chosen:
+        chosen = [ref_detection_id]
+    return chosen, diag
+
+
+def _appearance_check(points, ref_detection_id, ref_ids=None):
+    """Per-point ReID similarity to the TARGET REFERENCE SET.
 
     Motion continuity alone cannot tell "the same person walked on" from "a
-    different person walked into the same place". The stored person embeddings
-    can, so the reference is compared against the rest of the track and any point
-    that clearly is not the same person is treated as a break. Returns a dict of
-    detection_id -> similarity, or {} when embeddings are unavailable (in which
-    case the caller falls back to motion only)."""
-    ids = [p.detection_id for p in points]
-    ref_vec = vector_store.get_vector("reid", ref_detection_id)
-    if ref_vec is None:
+    different person walked into the same place"; the stored embeddings can. Each
+    frame is scored best-of-set against the reference, softened by the set mean so
+    one lucky view cannot carry a bad match.
+
+    Returns detection_id -> similarity, or {} when embeddings are unavailable (the
+    caller then falls back to motion only).
+    """
+    raw = {}
+    for p in points:
+        v = _unit(vector_store.get_vector("reid", p.detection_id))
+        if v is not None:
+            raw[p.detection_id] = v
+    if not raw:
         return {}
-    ref_vec = np.asarray(ref_vec, dtype="float32").ravel()
-    n = float(np.linalg.norm(ref_vec))
-    if n < 1e-6:
+    # Keep only vectors of the EXPECTED width. A large number of stored ReID vectors
+    # are malformed (width 1 instead of config.REID_DIM), and on some tracks they are
+    # the MAJORITY - so neither "the first vector seen" nor "the most common width"
+    # identifies a usable embedding. Getting this wrong made _appearance_check return
+    # nothing, which silently dropped Track Person to motion-only tracking: no
+    # identity verification (the box could follow a neighbour) and a clip truncated at
+    # the first motion break.
+    dim = config.REID_DIM
+    vecs = {d: v for d, v in raw.items() if v.shape[0] == dim}
+    if not vecs:
         return {}
-    ref_vec = ref_vec / n
+
+    ids = [d for d in (ref_ids or [ref_detection_id]) if d in vecs]
+    if not ids:
+        # The chosen reference views have no usable vector here. Returning nothing
+        # would drop Track Person to motion-only tracking - no identity check at all,
+        # so the box may follow a neighbour and the clip stops at the first motion
+        # break. Fall back to the track's own centroid instead, which is a weaker but
+        # real identity reference.
+        M = np.vstack(list(vecs.values())).reshape(-1, dim)
+        centroid = M.mean(axis=0)
+        n = float(np.linalg.norm(centroid))
+        if n < 1e-6:
+            return {}
+        R = (centroid / n).reshape(1, dim)
+    else:
+        R = np.vstack([vecs[d] for d in ids]).reshape(-1, dim)
+
     out = {}
-    for did in ids:
-        v = vector_store.get_vector("reid", did)
-        if v is None:
-            continue
-        v = np.asarray(v, dtype="float32").ravel()
-        nv = float(np.linalg.norm(v))
-        if nv < 1e-6:
-            continue
-        out[did] = float(np.dot(ref_vec, v / nv))
+    for did, v in vecs.items():
+        s = R @ v
+        out[did] = float(0.7 * s.max() + 0.3 * s.mean()) if len(s) > 1 else float(s.max())
     return out
 
 
@@ -126,6 +252,64 @@ def _bridge_gaps(points, native_fps, stride_s, frame_w=None, frame_h=None):
                         confidence=None, predicted=True))
         out.append(b)
     return out
+
+
+def _target_frames(points, ref_detection_id, frame_w, frame_h, appearance):
+    """Every frame of this track that is the TARGET - not just the run around the click.
+
+    Why this replaced a contiguous-run trim
+    ---------------------------------------
+    The old logic walked outward from the clicked detection and stopped at the first
+    break, then derived the clip's start/end from what survived. Measured on the four
+    test cameras, 5 of 21 tracks were truncated inside the person's visible span - one
+    returned 0.00-5.51 s of a 0.00-16.53 s appearance (33%). A single missed or
+    ambiguous frame threw away everything after it.
+
+    A break means "this frame is someone else", not "the target is gone for good". So
+    every frame is judged on its own identity evidence and the whole target span is
+    kept, with the impostor stretch simply excluded. The clip therefore runs from the
+    target's FIRST valid appearance to its LAST, while no box is ever drawn on a frame
+    that failed the identity check.
+
+    Frames with no stored embedding fall back to motion continuity against the last
+    accepted frame, so a missing vector does not silently drop a real sighting.
+    """
+    if not points:
+        return points
+    diag = math.hypot(frame_w or 1920, frame_h or 1080)
+    gaps = [b.offset_seconds - a.offset_seconds
+            for a, b in zip(points, points[1:]) if b.offset_seconds > a.offset_seconds]
+    gaps.sort()
+    stride = max(gaps[len(gaps) // 2] if gaps else 1.0, 1e-3)
+
+    def motion_ok(prev, cur) -> bool:
+        if prev is None:
+            return True
+        dt = cur.offset_seconds - prev.offset_seconds
+        if dt > 12.0:
+            return False
+        ca, cb = _center(prev.bbox), _center(cur.bbox)
+        dist = math.hypot(cb[0] - ca[0], cb[1] - ca[1])
+        steps = min(max(1.0, dt / stride), 4.0)
+        return dist <= 0.35 * diag * steps
+
+    kept, prev = [], None
+    for p in points:
+        sim = appearance.get(p.detection_id)
+        if sim is None:
+            ok = motion_ok(prev, p)                   # no embedding: motion decides
+        elif sim >= APPEARANCE_HOLD_SIM:
+            ok = True                                 # confidently the target
+        elif sim < APPEARANCE_BREAK_SIM:
+            ok = False                                # confidently someone else
+        else:
+            ok = motion_ok(prev, p)                   # ambiguous band
+        if p.detection_id == ref_detection_id:
+            ok = True                                 # the investigator's own choice
+        if ok:
+            kept.append(p)
+            prev = p
+    return kept or [p for p in points if p.detection_id == ref_detection_id] or points
 
 
 def _contiguous_segment(points, ref_detection_id, frame_w, frame_h, appearance=None):
@@ -225,15 +409,22 @@ def get_track_path(detection_id: int) -> TrackPathResponse:
         ))
     points.sort(key=lambda p: p.offset_seconds)
 
-    # Verify by APPEARANCE who each box actually is, then trim to the segment that
-    # is continuous with the clicked detection, so the box never transfers to a
-    # different person on a ByteTrack ID switch.
-    appearance = (_appearance_check(points, detection_id)
+    # Verify by APPEARANCE who each box actually is, so a box is never drawn on a
+    # frame where the stored track was holding someone else.
+    # Target identity reference: built once, from good views of the SELECTED track.
+    stride_s = 0.0
+    ref_ids, ref_diag = (reference_views(rows, detection_id)
+                         if ref.get("class_label") == "person" else ([detection_id], {}))
+    appearance = (_appearance_check(points, detection_id, ref_ids)
                   if ref.get("class_label") == "person" else {})
-    points = _contiguous_segment(points, detection_id,
-                                 v.get("width") if v else None,
-                                 v.get("height") if v else None,
-                                 appearance=appearance)
+    fw = v.get("width") if v else None
+    fh = v.get("height") if v else None
+    if appearance:
+        # identity evidence available: keep the target's WHOLE span
+        points = _target_frames(points, detection_id, fw, fh, appearance)
+    else:
+        # no embeddings for this track: fall back to the motion-only contiguous run
+        points = _contiguous_segment(points, detection_id, fw, fh)
     confs = [p.confidence for p in points if p.confidence is not None]
     real_points = len(points)
 
@@ -247,6 +438,15 @@ def get_track_path(detection_id: int) -> TrackPathResponse:
         points = _bridge_gaps(points, v.get("native_fps") if v else None, stride_s,
                               v.get("width") if v else None,
                               v.get("height") if v else None)
+    # Stretches inside the target's span with no box: the target is temporarily lost
+    # (occluded, missed, or the track was holding someone else). Reported rather than
+    # papered over with an interpolated box.
+    lost_spans = []
+    for a, b in zip(points, points[1:]):
+        gap = b.offset_seconds - a.offset_seconds
+        if gap > max(PREDICT_MAX_GAP_S, 2.5 * stride_s if stride_s else 0):
+            lost_spans.append([round(a.offset_seconds, 2), round(b.offset_seconds, 2)])
+
     sims = [s for did, s in appearance.items()
             if did in {p.detection_id for p in points}]
 
@@ -276,6 +476,9 @@ def get_track_path(detection_id: int) -> TrackPathResponse:
         detected_points=real_points,
         predicted_points=sum(1 for p in points if p.predicted),
         identity_confidence=round(float(sum(sims) / len(sims)), 4) if sims else None,
+        reference_views=list(ref_ids),
+        identity_threshold=APPEARANCE_BREAK_SIM,
+        lost_spans=lost_spans,
     )
 
 

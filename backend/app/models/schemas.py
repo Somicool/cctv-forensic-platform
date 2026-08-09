@@ -144,7 +144,14 @@ class TrackPathResponse(BaseModel):
     # Additive diagnostics for identity-preserving playback.
     detected_points: Optional[int] = None        # boxes backed by a real detection
     predicted_points: Optional[int] = None       # boxes interpolated across gaps
-    identity_confidence: Optional[float] = None  # mean ReID similarity to the click
+    identity_confidence: Optional[float] = None  # mean similarity to the target reference
+    # detection_ids forming the multi-view target reference, and the identity floor
+    # a frame must clear to stay attached to the target
+    reference_views: list[int] = Field(default_factory=list)
+    identity_threshold: Optional[float] = None
+    # [[from, to], ...] offsets inside the target's span with no box: the target is
+    # temporarily lost there rather than being drawn over somebody else
+    lost_spans: list[list[float]] = Field(default_factory=list)
 
 
 # ----------------------------- Ingestion ---------------------------
