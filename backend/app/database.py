@@ -216,6 +216,47 @@ CREATE TABLE IF NOT EXISTS activity_history (
     created_at  TEXT
 );
 
+-- Case File persistence. The bookmarked evidence set and the case metadata used
+-- to live ONLY in React state (context/investigation.jsx), so every saved item
+-- was lost on a page refresh or a backend restart. Stored here so a case is as
+-- permanent as every other forensic record. See app/case_store.py.
+CREATE TABLE IF NOT EXISTS case_evidence (
+    case_key     TEXT    NOT NULL,
+    detection_id INTEGER NOT NULL,
+    position     INTEGER,           -- preserves the order the officer added them
+    snapshot     TEXT,              -- full result item as saved (JSON)
+    added_at     TEXT,
+    PRIMARY KEY (case_key, detection_id)
+);
+
+CREATE TABLE IF NOT EXISTS case_meta (
+    case_key     TEXT PRIMARY KEY,
+    title        TEXT,
+    case_number  TEXT,
+    officer      TEXT,
+    notes        TEXT,
+    updated_at   TEXT
+);
+
+-- Generated PDF evidence reports (see app/case_report.py). Kept so previously
+-- issued reports stay listable and their SHA-256 remains on record.
+CREATE TABLE IF NOT EXISTS case_reports (
+    report_id     TEXT PRIMARY KEY,
+    case_key      TEXT,
+    export_id     TEXT,          -- set when the report covers a sealed past case
+    detection_ids TEXT,          -- JSON list of the exhibits covered
+    case_number   TEXT,
+    case_title    TEXT,
+    officer       TEXT,
+    created_at    TEXT,
+    exhibit_count INTEGER,
+    gemini_used   INTEGER,
+    gemini_model  TEXT,
+    sha256        TEXT,
+    file_path     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_case_ev ON case_evidence(case_key, position);
 CREATE INDEX IF NOT EXISTS idx_det_camera ON detections(camera_id);
 CREATE INDEX IF NOT EXISTS idx_det_time   ON detections(timestamp);
 CREATE INDEX IF NOT EXISTS idx_det_class  ON detections(class_label);
@@ -257,6 +298,19 @@ def _migrate(conn) -> None:
                       ("quality_metrics", "TEXT")):
         if col not in scols:
             conn.execute(f"ALTER TABLE saved_faces ADD COLUMN {col} {decl}")
+    # Best-face cache: everything needed to SAVE the already-chosen face without
+    # rescanning the track (embedding + the config fingerprint it was chosen
+    # under). Kept out of `metrics`, which is sent to the UI.
+    tcols = {r["name"] for r in conn.execute("PRAGMA table_info(track_best_face)").fetchall()}
+    if "save_payload" not in tcols:
+        conn.execute("ALTER TABLE track_best_face ADD COLUMN save_payload TEXT")
+    # Evidence reports can now be produced per case, including cases already sealed
+    # as exports - that link is stored so the UI can offer the existing PDF.
+    rcols = {r["name"] for r in conn.execute("PRAGMA table_info(case_reports)").fetchall()}
+    if rcols:
+        for col, decl in (("export_id", "TEXT"), ("detection_ids", "TEXT")):
+            if col not in rcols:
+                conn.execute(f"ALTER TABLE case_reports ADD COLUMN {col} {decl}")
     # Camera Registry: siting details needed for real journey reconstruction.
     ccols = {r["name"] for r in conn.execute("PRAGMA table_info(cameras)").fetchall()}
     for col, decl in (("address", "TEXT"), ("road_name", "TEXT"),
