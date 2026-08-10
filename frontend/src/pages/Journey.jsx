@@ -69,26 +69,51 @@ export default function Journey() {
   // coordinates, built from the journey's own camera_geo so the map and the
   // reconstruction cannot disagree. Cameras without coordinates are passed through
   // too - the map lists them as unplaceable rather than hiding the omission.
+  // Cameras the route actually passes through, with the tier the backend assigned.
+  // Includes matched-but-unconfirmed sightings, which are routable waypoints but
+  // must never be shown as confirmed identities - the tier goes into the marker's
+  // status so the popup states it plainly.
+  const routed = journey?.route?.routed_detail || []
+
   const mapCameras = useMemo(() => {
     const geo = j?.camera_geo || {}
-    const ids = [...new Set(nodes.map((n) => n.camera_id).filter(Boolean))]
+    const confirmedIds = new Set(nodes.map((n) => n.camera_id).filter(Boolean))
+    const tierBy = new Map(routed.map((r) => [r.camera_id, r]))
+    const ids = [...new Set([...confirmedIds, ...routed.map((r) => r.camera_id)])]
+      .filter(Boolean)
     return ids.map((id) => {
       const g = geo[id] || {}
       const has = g.lat != null && g.lon != null
+      const t = tierBy.get(id)
+      const confirmed = confirmedIds.has(id)
       return {
         camera_id: id, name: g.name || id, lat: g.lat, lon: g.lon, has_gps: has,
         address: g.address, road_name: g.road_name, facing_deg: g.facing_deg,
         facing: g.facing, fov_deg: g.fov_deg, coverage_m: g.coverage_m,
         coverage_cone: g.coverage_cone, cone_estimated: g.cone_estimated,
-        active: true, status: has ? 'located' : 'no-location',
+        active: true,
+        status: !has ? 'no-location'
+          : confirmed ? 'confirmed sighting'
+            : `${t?.tier || 'unconfirmed'} match — not a confirmed identity`
+              + (t?.identity != null ? ` (${Math.round(t.identity * 100)}%)` : ''),
         video_count: g.video_count, investigation_count: g.investigation_count,
       }
     }).filter((c) => c.has_gps)
-  }, [j, nodes])
+  }, [j, nodes, routed])
 
-  const mapSequence = useMemo(() => nodes.map((n) => ({
-    camera_id: n.camera_id, label: hhmm(n.first_seen), timestamp: n.first_seen,
-  })), [nodes])
+  // Waypoint order follows the route the backend built (chronological); falls back
+  // to the confirmed nodes when no route was produced.
+  const mapSequence = useMemo(() => (
+    routed.length
+      ? routed.map((r) => ({
+        camera_id: r.camera_id,
+        label: hhmm(r.first_seen) + (r.confirmed ? '' : ` · ${r.tier || 'unconfirmed'}`),
+        timestamp: r.first_seen,
+      }))
+      : nodes.map((n) => ({
+        camera_id: n.camera_id, label: hhmm(n.first_seen), timestamp: n.first_seen,
+      }))
+  ), [nodes, routed])
 
   // Server-side export so the file matches what the backend actually stored
   // (per-leg evidence, rejected transitions, and the road route when available).
@@ -244,6 +269,16 @@ export default function Journey() {
                               {Math.round(c.confidence * 100)}%
                             </span>
                           </div>
+                          {/* the matched person, so the card can be judged on the
+                              image and not only on the score bars */}
+                          <div className="tm-clip">
+                            {c.crop_url
+                              ? <img src={c.crop_url} alt={`match in ${c.camera_id}`}
+                                     loading="lazy"
+                                     onClick={() => c.video_url && setJump(c)}
+                                     title={c.video_url ? 'Open this sighting in the footage' : ''} />
+                              : <span className="tm-clip-ph">no image stored</span>}
+                          </div>
                           <div className="tm-ts mono">
                             {hhmm(c.first_seen)} · track {c.track_id}
                             {c.tier && <span className={'tm-tier ' + c.tier}>{c.tier}</span>}
@@ -264,12 +299,19 @@ export default function Journey() {
                           )}
                           {c.fusion && <Evidence f={c.fusion} />}
                           <div className="jn-tl-acts">
-                            <button className="ws-btn-sm" onClick={() => setJump({
-                              detection_id: c.detection_id, camera_id: c.camera_id,
-                              timestamp: c.first_seen, video_url: null, offset_seconds: null,
-                            })}>⤿ Jump to Video</button>
+                            {/* pass the candidate itself: the backend now resolves
+                                its source clip and seek offset, so the player gets
+                                a real recording instead of a hardcoded null */}
+                            {c.video_url
+                              ? <button className="ws-btn-sm" onClick={() => setJump({
+                                ...c, timestamp: c.first_seen,
+                              })}>⤿ Jump to Video</button>
+                              : <span className="muted small" title="This clip is no longer on disk">
+                                  no source clip
+                                </span>}
                             <button className="ws-btn-sm" onClick={() => setTrack({
-                              detection_id: c.detection_id, camera_id: c.camera_id, attributes: {},
+                              ...c, timestamp: c.first_seen,
+                              attributes: c.attributes || {},
                             })}>⤳ Track Person</button>
                           </div>
                         </div>
@@ -362,7 +404,9 @@ export default function Journey() {
             <div className="vi-head"><div className="vi-title">{jump.camera_name || jump.camera_id} · {hhmm(jump.timestamp)}</div>
               <button className="vi-x" onClick={() => setJump(null)}>×</button></div>
             <div className="vi-body">
-              <VideoPlayer key={jump.detection_id} src={jump.video_url} offset={jump.offset_seconds} autoPlay />
+              <VideoPlayer key={jump.detection_id} src={jump.video_url}
+                           offset={jump.offset_seconds} bbox={jump.bbox}
+                           frameW={jump.frame_width} frameH={jump.frame_height} autoPlay />
             </div>
           </div>
         </div>
