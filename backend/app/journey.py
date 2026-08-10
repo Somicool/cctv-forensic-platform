@@ -84,6 +84,41 @@ def _haversine_km(lat1, lon1, lat2, lon2) -> float:
     return 2 * 6371.0 * math.asin(math.sqrt(min(1.0, a)))
 
 
+def _attach_media(rows: list[dict], vindex: dict | None = None) -> list[dict]:
+    """Add the person's crop image and its source-clip playback fields to any row
+    that carries a detection_id.
+
+    The legacy detection-level path already did this inline, but the track-level
+    matcher did not, so track-level journey nodes and the per-camera candidates
+    reached the UI with no crop and no video_url - which is why "Jump to Video"
+    reported "No source recording linked to this detection". Resolved from the
+    SAME stored detection rows and video index the rest of the app uses; nothing is
+    recomputed and existing values are never overwritten."""
+    ids = [r.get("detection_id") for r in rows if r.get("detection_id") is not None]
+    if not ids:
+        return rows
+    dets = {d["detection_id"]: d for d in database.get_detections(ids)}
+    vindex = _video_index() if vindex is None else vindex
+    for r in rows:
+        d = dets.get(r.get("detection_id"))
+        if not d:
+            continue
+        pb = playback_fields(d, vindex)
+        if not r.get("crop_url"):
+            r["crop_url"] = media_url(d.get("crop_path"))
+        if not r.get("video_url"):
+            r["video_url"] = pb.get("video_url")
+        if r.get("offset_seconds") is None:
+            r["offset_seconds"] = pb.get("offset_seconds")
+        if not r.get("frame_width"):
+            r["frame_width"] = pb.get("frame_width")
+        if not r.get("frame_height"):
+            r["frame_height"] = pb.get("frame_height")
+        if not r.get("bbox") and d.get("bbox_x") is not None:
+            r["bbox"] = [d["bbox_x"], d["bbox_y"], d["bbox_w"], d["bbox_h"]]
+    return rows
+
+
 def _cam_geo() -> dict:
     return {c["camera_id"]: c for c in database.list_cameras()}
 
@@ -276,38 +311,111 @@ UNAVAILABLE_MSG = ("Journey reconstruction unavailable until valid camera "
                    "locations are configured.")
 
 
-def _route_for(nodes: list[dict], geo: dict) -> dict:
+def _route_points(nodes: list[dict], geo: dict,
+                  candidates: list[dict] | None = None) -> tuple[list[dict], list[str], list[str]]:
+    """Ordered, de-duplicated camera coordinates to route through.
+
+    Includes the ASSERTED journey nodes AND the matched-but-unconfirmed cameras
+    (probable / possible / weak / ambiguous). Routing eligibility is a question of
+    "was this person seen here and do we know where here is", which is separate
+    from "is this identity confirmed". Restricting the route to nodes that cleared
+    IDENTITY_ACCEPT meant a person matched in four located cameras still reported
+    "only one matched camera has coordinates".
+
+    Identity semantics are untouched: nodes, legs and confidence are unchanged, and
+    every routed point carries its tier so an unconfirmed sighting is never drawn as
+    a confirmed one. Proximity is never a filter - two cameras metres apart are two
+    real locations.
+
+    Returns (points, skipped_no_location, unconfirmed_camera_ids)."""
+    seen: dict[str, dict] = {}
+    order: list[tuple] = []
+
+    def add(cam_id, ts, tier, identity, confirmed):
+        if not cam_id or cam_id in seen:
+            return
+        seen[cam_id] = {"camera_id": cam_id, "tier": tier, "identity": identity,
+                        "confirmed": confirmed, "first_seen": ts,
+                        "_ts": _parse_ts(ts)}
+        order.append(cam_id)
+
+    for n in nodes:
+        add(n.get("camera_id"), n.get("first_seen") or n.get("timestamp"),
+            "reference" if n.get("is_reference") else (n.get("tier") or "confirmed"),
+            n.get("identity_score"), True)
+    for c in (candidates or []):
+        add(c.get("camera_id"), c.get("first_seen") or c.get("timestamp"),
+            c.get("tier") or track_identity.tier(c.get("identity") or 0.0),
+            c.get("identity"), False)
+
+    located, skipped, unconfirmed = [], [], []
+    for cam_id in order:
+        meta = seen[cam_id]
+        g = geo.get(cam_id) or {}
+        lat, lon = g.get("lat"), g.get("lon")
+        if lat is None or lon is None:
+            skipped.append(cam_id)
+            continue
+        try:
+            meta = {**meta, "lat": float(lat), "lon": float(lon)}
+        except (TypeError, ValueError):          # stored as unparsable text
+            skipped.append(cam_id)
+            continue
+        located.append(meta)
+        if not meta["confirmed"]:
+            unconfirmed.append(cam_id)
+
+    # chronological, which is the order the person actually passed the cameras
+    located.sort(key=lambda p: (p["_ts"] or datetime.min))
+    for p in located:
+        p.pop("_ts", None)
+    return located, skipped, unconfirmed
+
+
+def _route_for(nodes: list[dict], geo: dict, candidates: list[dict] | None = None) -> dict:
     """Real road route between the matched cameras, via OSRM (OpenStreetMap).
 
-    Only cameras the person was ACTUALLY detected at are routed, in time order, and
-    only those with stored coordinates. Cameras without coordinates are skipped and
-    named in `skipped_no_location` so the omission is visible rather than silent.
+    Cameras the person was matched at are routed in time order, and only those with
+    stored coordinates. Cameras without coordinates are skipped and named in
+    `skipped_no_location` so the omission is visible rather than silent.
 
     Fewer than two located cameras produces no route at all. A routing failure
     produces an explicit "Road route unavailable." - a straight line between
     cameras is never substituted, because it would assert a path through buildings
     that the evidence does not support."""
-    pts, skipped = [], []
-    for n in nodes:
-        g = geo.get(n["camera_id"]) or {}
-        if g.get("lat") is not None and g.get("lon") is not None:
-            pts.append({"camera_id": n["camera_id"], "lat": float(g["lat"]),
-                        "lon": float(g["lon"])})
-        else:
-            skipped.append(n["camera_id"])
+    pts, skipped, unconfirmed = _route_points(nodes, geo, candidates)
     if len(pts) < 2:
+        matched = len(pts) + len(skipped)
+        if not pts and not skipped:
+            reason = UNAVAILABLE_MSG
+        elif not pts:
+            reason = (f"None of the {matched} matched camera(s) has stored "
+                      "coordinates. Add them in the Camera Registry.")
+        else:
+            reason = (f"Only 1 of the {matched} matched cameras has stored "
+                      "coordinates - at least two are required to reconstruct a "
+                      "route. Missing: " + ", ".join(skipped) + ".")
         return {"available": False, "provider": None, "geometry": [],
-                "road_route": False,
-                "reason": (UNAVAILABLE_MSG if not pts else
-                           "Only one matched camera has coordinates - at least two "
-                           "are required to reconstruct a route."),
-                "cameras_with_gps": len(pts), "cameras_needed": 2,
-                "skipped_no_location": skipped}
+                "road_route": False, "reason": reason,
+                "cameras_with_gps": len(pts), "cameras_matched": matched,
+                "cameras_needed": 2, "skipped_no_location": skipped}
 
     res = routing.cached_route(pts, profile="foot", alternatives=True)
     res["cameras_with_gps"] = len(pts)
+    res["cameras_matched"] = len(pts) + len(skipped)
     res["skipped_no_location"] = skipped
+    # full per-camera detail (id + tier + score) so the map can mark an
+    # unconfirmed waypoint differently from a confirmed one
     res["routed_cameras"] = [p["camera_id"] for p in pts]
+    res["routed_detail"] = [
+        {k: p.get(k) for k in ("camera_id", "tier", "identity", "confirmed", "first_seen")}
+        for p in pts]
+    res["includes_unconfirmed"] = bool(unconfirmed)
+    res["unconfirmed_cameras"] = unconfirmed
+    if unconfirmed:
+        res["notice"] = (f"Route spans {len(unconfirmed)} unconfirmed sighting(s) "
+                         f"({', '.join(unconfirmed)}). These are probable or possible "
+                         "matches, not confirmed identities.")
     if not res.get("available"):
         res["reason"] = res.get("reason") or "Road route unavailable."
     else:
@@ -340,10 +448,14 @@ def _score_alternatives(res: dict) -> list[dict]:
     return routes
 
 
-def _journey(nodes: list[dict], geo: dict, label: str) -> dict:
+def _journey(nodes: list[dict], geo: dict, label: str,
+             candidates: list[dict] | None = None) -> dict:
+    """`candidates` are the matched-but-unconfirmed cameras. They take no part in
+    legs, timeline or confidence - only in routing, where a located sighting is
+    routable regardless of whether its identity is asserted."""
     legs, rejects = _build_legs(nodes, geo)
     t0 = time.perf_counter()
-    route = _route_for(nodes, geo)
+    route = _route_for(nodes, geo, candidates)
     route_ms = round((time.perf_counter() - t0) * 1000.0, 2)
     return {"label": label, "nodes": nodes, "legs": legs,
             # per-camera timeline with the mode used to reach the next camera and
@@ -417,6 +529,7 @@ def _nodes_from_candidates(match: dict, accept: float) -> list[dict]:
             "alternatives": c.get("camera_alternatives") or [],
         })
     nodes.sort(key=lambda n: (_parse_ts(n["first_seen"]) or datetime.min))
+    _attach_media(nodes)          # crop + source clip for the timeline / jump-to-video
     return nodes
 
 
@@ -473,6 +586,13 @@ def reconstruct(detection_id: int, cameras: list[str] | None = None,
         match = track_match.find_candidates(vid, tid, cameras=cameras, top_k=top_k)
 
     track_level = bool(match) and not match.get("error")
+    if track_level:
+        # Every candidate shown under "Probable matches per camera" gets its crop
+        # and its source clip, so an unconfirmed sighting can be reviewed in the
+        # footage exactly like a confirmed one.
+        vindex = _video_index()
+        _attach_media(match.get("best_per_camera") or [], vindex)
+        _attach_media(match.get("candidates") or [], vindex)
     nodes = _nodes_from_candidates(match, accept) if track_level else []
     # If the track-level path asserted no second camera, fall back to the original
     # single-detection matcher before giving up - it uses a different (older) route
@@ -488,7 +608,15 @@ def reconstruct(detection_id: int, cameras: list[str] | None = None,
     # under `matching` so the investigator sees the near-misses.
     confirmed_cameras = len({n.get("camera_id") for n in nodes})
 
-    primary = _journey(nodes, geo, "Primary journey")
+    # Cameras the person was matched at but which were NOT asserted as journey
+    # nodes (below IDENTITY_ACCEPT, or ambiguous). They are routable waypoints -
+    # each one is still a place this person probably passed, and it is labelled
+    # with its tier - but they change nothing about identity, legs or confidence.
+    asserted = {n.get("camera_id") for n in nodes}
+    unconfirmed = [c for c in ((match or {}).get("best_per_camera") or [])
+                   if c.get("camera_id") and c["camera_id"] not in asserted]
+
+    primary = _journey(nodes, geo, "Primary journey", unconfirmed)
 
     # Alternatives (honest, minimal): drop the weakest camera, and swap the
     # weakest camera for its runner-up appearance. Each is scored independently.
@@ -496,7 +624,8 @@ def reconstruct(detection_id: int, cameras: list[str] | None = None,
     if len(nodes) > 2:
         weakest = min(nodes, key=lambda n: n.get("identity_score") or 0.0)
         pruned = [n for n in nodes if n is not weakest]
-        alt = _journey(pruned, geo, f"Without {weakest['camera_id']} (weakest match)")
+        alt = _journey(pruned, geo, f"Without {weakest['camera_id']} (weakest match)",
+                       unconfirmed)
         if alt["confidence"] > 0:
             alts.append(alt)
     weakest = min(nodes, key=lambda n: n.get("identity_score") or 0.0)
@@ -508,7 +637,8 @@ def reconstruct(detection_id: int, cameras: list[str] | None = None,
             else:
                 swapped.append(n)
         swapped.sort(key=lambda n: (_parse_ts(n["first_seen"]) or datetime.min))
-        alt = _journey(swapped, geo, f"Alternative sighting in {weakest['camera_id']}")
+        alt = _journey(swapped, geo, f"Alternative sighting in {weakest['camera_id']}",
+                       unconfirmed)
         if alt["confidence"] > 0:
             alts.append(alt)
     alts.sort(key=lambda j: j["confidence"], reverse=True)
