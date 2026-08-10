@@ -79,6 +79,37 @@ body {
 .fp-brand-name { font-weight: 700; font-size: 15px; letter-spacing: 0.2px; white-space: nowrap; }
 .fp-brand-sub { font-size: 11px; color: var(--fp-muted); white-space: nowrap; }
 
+/* ---------------------------- VigilSense brand mark ---------------------- */
+.vs-brand { gap: 11px; padding: 10px 6px 18px; }
+.vs-badge {
+  position: relative; width: 38px; height: 38px; flex-shrink: 0;
+  display: grid; place-items: center; border-radius: 11px; color: #fff;
+  background: linear-gradient(145deg, #5b86ff 0%, #4f7cff 45%, #2f4fd8 100%);
+  box-shadow: 0 6px 18px rgba(79,124,255,.38), inset 0 1px 0 rgba(255,255,255,.28);
+}
+/* faint sheen across the badge so it reads as metal rather than flat colour */
+.vs-badge::after {
+  content: ''; position: absolute; inset: 0; border-radius: 11px;
+  background: linear-gradient(200deg, rgba(255,255,255,.26), transparent 58%);
+  pointer-events: none;
+}
+.vs-badge svg { position: relative; z-index: 1; width: 20px; height: 20px; }
+.vs-mark { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.vs-word {
+  display: flex; align-items: baseline; white-space: nowrap;
+  font-size: 17px; line-height: 1; letter-spacing: 2.2px;
+}
+.vs-word b { font-weight: 800; color: var(--fp-text); }
+.vs-word i {
+  font-style: normal; font-weight: 400; letter-spacing: 2.6px;
+  background: linear-gradient(90deg, #6f9bff, #9db9ff);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.vs-rule {
+  height: 2px; width: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, var(--fp-accent), rgba(79,124,255,0) 92%);
+}
+
 .fp-nav { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .fp-nav-label {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;
@@ -99,6 +130,7 @@ body {
 .nav-collapsed .fp-nav-item { justify-content: center; padding: 11px 0; }
 .nav-collapsed .fp-nav-item .fp-nav-txt,
 .nav-collapsed .fp-brand-text,
+.nav-collapsed .vs-mark,
 .nav-collapsed .fp-nav-label { display: none; }
 
 .fp-sidebar-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--fp-border); }
@@ -444,6 +476,20 @@ body {
   overflow: hidden; text-overflow: ellipsis; }
 .tm-conf { font-size: 15px; font-weight: 800; flex-shrink: 0; }
 .tm-conf.hi { color: var(--fp-success); } .tm-conf.mid { color: var(--fp-warn); } .tm-conf.lo { color: #ff8a94; }
+/* the matched person's crop inside a per-camera match card. Fixed height with
+   object-fit: contain so tall and wide crops both sit in the same card rhythm
+   without being distorted. */
+.tm-clip {
+  margin: 10px 0 2px; height: 132px; border-radius: 9px; overflow: hidden;
+  background: #0d121c; border: 1px solid var(--fp-border);
+  display: grid; place-items: center;
+}
+.tm-clip img {
+  width: 100%; height: 100%; object-fit: contain; display: block;
+  cursor: pointer; transition: transform .18s ease;
+}
+.tm-clip img:hover { transform: scale(1.04); }
+.tm-clip-ph { font-size: 10.5px; color: var(--fp-muted); }
 .tm-ts { font-size: 10.5px; color: var(--fp-muted); margin-top: 2px; }
 .tm-bars { display: flex; flex-direction: column; gap: 3px; margin-top: 9px; }
 .tm-bar { display: flex; align-items: center; gap: 7px; font-size: 10.5px; color: var(--fp-muted); }
