@@ -1,0 +1,358 @@
+/* ============================================================================
+   Command Dashboard — police forensic intelligence overview.
+   Everything is scoped under .cd- so it cannot affect any other page. Reuses the
+   existing --fp-* palette (dark charcoal base, cool blue accent, muted
+   green/amber/red for state) so the redesign stays inside the app's design
+   language instead of introducing a second one.
+   ========================================================================= */
+.cd {
+  --cd-gap: 12px;
+  --cd-line: #212a3b;
+  --cd-line-2: #2b364a;
+  --cd-panel: linear-gradient(180deg, #131926 0%, #10151f 100%);
+  --cd-ok: #2ecc82;
+  --cd-warn: #f0b429;
+  --cd-crit: #ff5b6a;
+  --cd-info: #4f7cff;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cd-gap);
+  animation: fpIn 0.28s ease both;
+}
+
+/* ------------------------------- command header ------------------------- */
+.cd-head {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 11px 18px;
+  border: 1px solid var(--cd-line);
+  border-radius: var(--fp-radius);
+  background: var(--cd-panel);
+  box-shadow: var(--fp-shadow-sm);
+}
+.cd-head-mark { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cd-shield {
+  width: 38px; height: 38px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 11px;
+  color: #cfe0ff;
+  background: linear-gradient(160deg, rgba(79,124,255,.22), rgba(79,124,255,.06));
+  border: 1px solid rgba(79,124,255,.32);
+}
+.cd-wordmark { display: flex; flex-direction: column; min-width: 0; }
+.cd-wordmark b {
+  font-size: 19px; font-weight: 700; letter-spacing: 2.4px; line-height: 1.15;
+  color: var(--fp-text);
+}
+.cd-wordmark span {
+  font-size: 9.5px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--fp-muted); margin-top: 3px; font-weight: 600;
+}
+.cd-head-spacer { flex: 1 1 auto; }
+.cd-head-meta { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.cd-clock { text-align: right; line-height: 1.25; }
+.cd-clock b {
+  display: block; font-size: 16px; font-weight: 650;
+  font-variant-numeric: tabular-nums; color: var(--fp-text);
+}
+.cd-clock span { font-size: 10.5px; color: var(--fp-muted); }
+
+/* subtle operational indicator — deliberately small */
+.cd-sys {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 11px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  border: 1px solid rgba(46,204,130,.3); color: #8ff0b6; background: rgba(46,204,130,.08);
+}
+.cd-sys.off { border-color: rgba(255,91,106,.34); color: #ffb3bb; background: rgba(255,91,106,.08); }
+.cd-sys.wait { border-color: rgba(240,180,41,.34); color: #f7d488; background: rgba(240,180,41,.08); }
+.cd-sys i {
+  width: 7px; height: 7px; border-radius: 50%; background: currentColor;
+  box-shadow: 0 0 0 3px rgba(46,204,130,.14);
+  animation: cdPulse 2.6s ease-in-out infinite;
+}
+@keyframes cdPulse { 0%,100% { opacity: 1 } 50% { opacity: .45 } }
+
+.cd-officer {
+  display: flex; align-items: center; gap: 9px;
+  padding-left: 16px; border-left: 1px solid var(--cd-line);
+}
+.cd-officer-badge {
+  width: 33px; height: 33px; border-radius: 9px; flex: none;
+  display: grid; place-items: center;
+  font-size: 12px; font-weight: 700; letter-spacing: .5px;
+  color: #cfe0ff; background: rgba(79,124,255,.14); border: 1px solid rgba(79,124,255,.28);
+}
+.cd-officer-txt { display: flex; flex-direction: column; line-height: 1.3; }
+.cd-officer-txt b { font-size: 12.5px; color: var(--fp-text); }
+.cd-officer-txt span { font-size: 10px; color: var(--fp-muted); }
+.cd-head-btn {
+  display: grid; place-items: center; width: 33px; height: 33px;
+  border-radius: 9px; border: 1px solid var(--cd-line);
+  background: var(--fp-surface-2); color: var(--fp-text-dim);
+  cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+}
+.cd-head-btn:hover { border-color: var(--fp-accent); color: var(--fp-accent-2); background: var(--fp-elevated); }
+
+/* ------------------------------- stat strip ----------------------------- */
+.cd-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--cd-gap); }
+.cd-stat {
+  position: relative; overflow: hidden;
+  padding: 11px 14px 10px;
+  border: 1px solid var(--cd-line); border-radius: var(--fp-radius-sm);
+  background: var(--cd-panel);
+  transition: border-color .16s, transform .16s;
+}
+.cd-stat::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--fp-accent); opacity: .55;
+}
+.cd-stat.ok::before { background: var(--cd-ok); }
+.cd-stat.warn::before { background: var(--cd-warn); }
+.cd-stat.crit::before { background: var(--cd-crit); }
+.cd-stat:hover { border-color: var(--cd-line-2); transform: translateY(-1px); }
+.cd-stat-h {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase;
+  color: var(--fp-muted);
+}
+.cd-stat-h svg { width: 13px; height: 13px; flex: none; }
+.cd-stat-v {
+  margin-top: 6px; font-size: 25px; font-weight: 700; line-height: 1;
+  letter-spacing: -0.6px; font-variant-numeric: tabular-nums; color: var(--fp-text);
+}
+.cd-stat-v small { font-size: 14px; font-weight: 600; color: var(--fp-muted); margin-left: 2px; }
+.cd-stat-sub { margin-top: 5px; font-size: 10.5px; color: var(--fp-text-dim); }
+.cd-stat-sub.up { color: #8ff0b6; }
+.cd-stat-sub.attn { color: #f7d488; }
+
+/* ------------------------------- layout bands ---------------------------
+   Two bands rather than two tall columns: the investigations table leads, then
+   the three operational panels sit side by side. This keeps the command view on
+   one 1920x1080 screen instead of stacking four panels down the right edge. */
+.cd-grid { display: grid; grid-template-columns: minmax(0, 1.62fr) minmax(0, 1fr); gap: var(--cd-gap); }
+.cd-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--cd-gap); }
+.cd-col { display: flex; flex-direction: column; gap: var(--cd-gap); min-width: 0; }
+
+.cd-panel {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--cd-line); border-radius: var(--fp-radius);
+  background: var(--cd-panel); box-shadow: var(--fp-shadow-sm);
+}
+.cd-panel-h {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 15px; border-bottom: 1px solid var(--cd-line);
+}
+.cd-panel-h svg { width: 14px; height: 14px; color: var(--fp-accent-2); flex: none; }
+.cd-panel-h h3 {
+  margin: 0; font-size: 11.5px; font-weight: 700;
+  letter-spacing: 1.3px; text-transform: uppercase; color: var(--fp-text);
+}
+.cd-panel-h .cd-count {
+  margin-left: auto; font-size: 10.5px; color: var(--fp-muted);
+  font-variant-numeric: tabular-nums;
+}
+.cd-panel-h .cd-link {
+  margin-left: auto; font-size: 10.5px; font-weight: 600; color: var(--fp-accent-2);
+  text-decoration: none; letter-spacing: .3px;
+}
+.cd-panel-h .cd-link:hover { text-decoration: underline; }
+/* The body fills whatever height the panel is given, so a list never leaves a
+   band of empty space below it - it simply shows more rows. flex-basis 0 keeps
+   the list OUT of the panel's intrinsic height, so a long list fills the space
+   it is given instead of stretching the whole row taller. */
+.cd-panel-b { padding: 5px 0; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.cd-panel-b.pad { padding: 14px 15px; display: block; }
+
+/* ------------------------------- investigations table ------------------- */
+.cd-tbl-wrap { flex: 1 1 0; min-height: 176px; overflow: auto; }
+.cd-tbl { width: 100%; border-collapse: collapse; }
+.cd-tbl th {
+  position: sticky; top: 0; z-index: 1;
+  padding: 8px 14px; text-align: left;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--fp-muted); background: #131926;
+  border-bottom: 1px solid var(--cd-line); white-space: nowrap;
+}
+.cd-tbl td {
+  padding: 9px 14px; font-size: 12px; color: var(--fp-text-dim);
+  border-bottom: 1px solid rgba(33,42,59,.65); white-space: nowrap;
+}
+.cd-tbl tr { cursor: pointer; transition: background .13s; }
+.cd-tbl tbody tr:hover { background: rgba(79,124,255,.06); }
+.cd-tbl tbody tr:hover td:first-child { box-shadow: inset 2px 0 0 var(--fp-accent); }
+.cd-tbl .cd-cid { font-family: ui-monospace, monospace; font-size: 11px; color: var(--fp-text); }
+.cd-tbl .cd-name { color: var(--fp-text); font-weight: 550; max-width: 230px;
+  overflow: hidden; text-overflow: ellipsis; }
+.cd-tbl .num { font-variant-numeric: tabular-nums; }
+.cd-tbl .dim { color: var(--fp-muted); }
+
+/* status / confidence badges */
+.cd-badge {
+  display: inline-block; padding: 2.5px 8px; border-radius: 5px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
+  border: 1px solid transparent;
+}
+.cd-badge.confirmed { color: #8ff0b6; background: rgba(46,204,130,.1); border-color: rgba(46,204,130,.28); }
+.cd-badge.review { color: #f7d488; background: rgba(240,180,41,.1); border-color: rgba(240,180,41,.28); }
+.cd-badge.weak { color: #ffb3bb; background: rgba(255,91,106,.1); border-color: rgba(255,91,106,.26); }
+.cd-badge.neutral { color: var(--fp-text-dim); background: rgba(255,255,255,.04); border-color: var(--cd-line-2); }
+
+/* ------------------------------- start investigation -------------------- */
+.cd-start-p {
+  margin: 0 0 11px; font-size: 11.5px; line-height: 1.6; color: var(--fp-text-dim);
+}
+.cd-cta {
+  display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+  padding: 10px 14px; border: none; border-radius: var(--fp-radius-sm);
+  font-size: 13px; font-weight: 650; letter-spacing: .3px; color: #fff; cursor: pointer;
+  background: linear-gradient(135deg, var(--fp-accent), #3f66e0);
+  box-shadow: 0 4px 16px rgba(79,124,255,.28);
+  transition: filter .15s, transform .15s, box-shadow .15s;
+}
+.cd-cta svg { width: 15px; height: 15px; }
+.cd-cta:hover { filter: brightness(1.07); transform: translateY(-1px); box-shadow: 0 6px 20px rgba(79,124,255,.36); }
+.cd-cta:active { transform: translateY(0); }
+.cd-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 9px; }
+.cd-act {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 9px 6px; border-radius: 9px; cursor: pointer; text-decoration: none;
+  border: 1px solid var(--cd-line); background: var(--fp-surface-2);
+  color: var(--fp-text-dim); font-size: 9.5px; font-weight: 650;
+  letter-spacing: .5px; text-transform: uppercase; text-align: center;
+  transition: border-color .15s, color .15s, background .15s, transform .15s;
+}
+.cd-act svg { width: 15px; height: 15px; }
+.cd-act:hover {
+  border-color: var(--fp-accent); color: var(--fp-accent-2);
+  background: var(--fp-elevated); transform: translateY(-1px);
+}
+/* text-only jumps to the records areas - deliberately lighter weight than the
+   search actions above, so the visual hierarchy stays clear */
+.cd-jump {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--cd-line);
+}
+.cd-jump a {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .3px;
+  color: var(--fp-muted); text-decoration: none; transition: color .15s;
+}
+.cd-jump a svg { width: 13px; height: 13px; }
+.cd-jump a:hover { color: var(--fp-accent-2); }
+
+/* ------------------------------- attention list ------------------------- */
+.cd-attn { display: flex; flex-direction: column; }
+.cd-attn-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 15px; border-bottom: 1px solid rgba(33,42,59,.6);
+  font-size: 11.5px; line-height: 1.45; color: var(--fp-text-dim);
+  text-decoration: none; transition: background .13s;
+}
+.cd-attn-row:last-child { border-bottom: none; }
+a.cd-attn-row:hover { background: rgba(79,124,255,.055); }
+.cd-attn-ic { flex: none; width: 14px; text-align: center; font-size: 12px; line-height: 1.35; }
+.cd-attn-row.warn .cd-attn-ic { color: var(--cd-warn); }
+.cd-attn-row.crit .cd-attn-ic { color: var(--cd-crit); }
+.cd-attn-row.ok .cd-attn-ic { color: var(--cd-ok); }
+.cd-attn-row.info .cd-attn-ic { color: var(--cd-info); }
+.cd-attn-txt b { color: var(--fp-text); font-weight: 600; }
+.cd-attn-txt span { display: block; font-size: 10px; color: var(--fp-muted); margin-top: 2px; }
+
+/* ------------------------------- system status -------------------------- */
+.cd-sysgrid { display: flex; flex-direction: column; }
+.cd-sysrow {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 15px; border-bottom: 1px solid rgba(33,42,59,.6);
+}
+.cd-sysrow:last-child { border-bottom: none; }
+.cd-sysrow .k {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--fp-muted); width: 84px; flex: none;
+}
+.cd-sysrow .v {
+  margin-left: auto; font-size: 11.5px; color: var(--fp-text);
+  font-variant-numeric: tabular-nums; text-align: right;
+}
+.cd-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--fp-muted); }
+.cd-dot.ok { background: var(--cd-ok); box-shadow: 0 0 0 3px rgba(46,204,130,.13); }
+.cd-dot.warn { background: var(--cd-warn); box-shadow: 0 0 0 3px rgba(240,180,41,.13); }
+.cd-dot.crit { background: var(--cd-crit); box-shadow: 0 0 0 3px rgba(255,91,106,.13); }
+
+/* ------------------------------- activity timeline ---------------------- */
+.cd-feed { display: flex; flex-direction: column; flex: 1 1 0; min-height: 150px; overflow: auto; }
+.cd-feed-row {
+  display: grid; grid-template-columns: 42px 21px 1fr auto; align-items: center; gap: 9px;
+  padding: 8px 15px; border-bottom: 1px solid rgba(33,42,59,.55);
+  transition: background .13s;
+}
+.cd-feed-row:last-child { border-bottom: none; }
+.cd-feed-row:hover { background: rgba(79,124,255,.05); }
+.cd-feed-t {
+  font-size: 11px; font-variant-numeric: tabular-nums; color: var(--fp-muted);
+  font-family: ui-monospace, monospace;
+}
+.cd-feed-ic {
+  width: 21px; height: 21px; border-radius: 6px; display: grid; place-items: center;
+  font-size: 11px; background: rgba(255,255,255,.045); border: 1px solid var(--cd-line);
+  color: var(--fp-text-dim);
+}
+.cd-feed-ic.tracked { color: #8ff0b6; border-color: rgba(46,204,130,.26); background: rgba(46,204,130,.08); }
+.cd-feed-ic.found { color: #cfe0ff; border-color: rgba(79,124,255,.26); background: rgba(79,124,255,.08); }
+.cd-feed-ic.searched { color: #f7d488; border-color: rgba(240,180,41,.24); background: rgba(240,180,41,.07); }
+.cd-feed-txt { font-size: 11.5px; color: var(--fp-text-dim); min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.cd-feed-txt b { color: var(--fp-text); font-weight: 600; }
+.cd-feed-txt .dim { color: var(--fp-muted); }
+.cd-feed-ref {
+  font-size: 10px; color: var(--fp-muted); font-family: ui-monospace, monospace;
+  padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,.035);
+  border: 1px solid var(--cd-line); white-space: nowrap;
+}
+
+/* ------------------------------- map + empty ---------------------------- */
+.cd-map { padding: 0 14px 12px; }
+.cd-map .leaflet-container { border-radius: var(--fp-radius-sm); }
+.cd-map-foot { padding-top: 8px; font-size: 10px; color: var(--fp-muted); text-align: center; }
+.cd-empty {
+  padding: 22px 18px; text-align: center; font-size: 11.5px; line-height: 1.65;
+  color: var(--fp-muted);
+}
+.cd-empty b { color: var(--fp-text-dim); }
+.cd-empty a { color: var(--fp-accent-2); text-decoration: none; }
+.cd-empty a:hover { text-decoration: underline; }
+
+/* ------------------------------- responsive -----------------------------
+   1440x900 / 1366x768: tighten every band so the command view stays as close to
+   one screen as the content allows, without dropping a panel. */
+@media (max-width: 1500px) {
+  .cd { --cd-gap: 10px; }
+  .cd-head { padding: 9px 15px; }
+  .cd-stat { padding: 9px 12px; }
+  .cd-stat-v { font-size: 22px; margin-top: 5px; }
+  .cd-stat-sub { margin-top: 4px; }
+  .cd-panel-h { padding: 9px 14px; }
+  .cd-panel-b.pad { padding: 12px 14px; }
+  .cd-tbl-wrap { min-height: 150px; }
+  .cd-tbl td { padding: 8px 13px; }
+  .cd-feed { min-height: 132px; }
+  .cd-feed-row { padding: 7px 14px; }
+  .cd-sysrow { padding: 7px 14px; }
+  .cd-attn-row { padding: 8px 14px; }
+  .cd-cta { padding: 9px 13px; }
+  .cd-act { padding: 8px 5px; }
+}
+@media (max-width: 1280px) {
+  .cd-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cd-grid, .cd-grid3 { grid-template-columns: minmax(0, 1fr); }
+  /* stacked: no sibling sets the height, so give the lists room of their own */
+  .cd-tbl-wrap { min-height: 300px; }
+  .cd-feed { min-height: 260px; }
+}
+@media (max-width: 760px) {
+  .cd-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cd-head { padding: 12px 14px; }
+  .cd-head-meta { width: 100%; justify-content: space-between; }
+  .cd-officer { padding-left: 0; border-left: none; }
+  .cd-feed-row { grid-template-columns: 42px 21px 1fr; }
+  .cd-feed-ref { display: none; }
+}
