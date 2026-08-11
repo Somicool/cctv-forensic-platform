@@ -177,33 +177,8 @@ export default function Settings() {
           <Row k="Plates stored" v={c.plates} />
         </section>
 
-        {/* ---- Cameras & GPS ---- */}
-        <section className="fp-panel">
-          <div className="fp-panel-title"><span>Cameras &amp; GPS</span><span className="muted">{cams.length}</span></div>
-          <div className="ws-list" style={{ maxHeight: 170 }}>
-            {cams.length === 0 ? <div className="muted small">No cameras registered.</div>
-              : cams.map((x) => (
-                <div key={x.camera_id} className="ws-cam">
-                  <span className="id">{x.camera_id}</span>
-                  <span className="nm">{x.name && x.name !== x.camera_id ? x.name : (x.location || '')}</span>
-                  {(x.lat != null && x.lon != null) && <span className="st-gps">GPS</span>}
-                </div>))}
-          </div>
-          <div className="fp-panel-title" style={{ marginTop: 12 }}><span>Add / update camera</span></div>
-          <div className="ws-fld"><label>Camera ID *</label>
-            <input value={nc.cameraId} onChange={(e) => setNc({ ...nc, cameraId: e.target.value })} placeholder="CAM-07" /></div>
-          <div className="ws-fld"><label>Name</label>
-            <input value={nc.name} onChange={(e) => setNc({ ...nc, name: e.target.value })} placeholder="Station Road North" /></div>
-          <div className="st-2col">
-            <div className="ws-fld"><label>Latitude</label>
-              <input value={nc.lat} onChange={(e) => setNc({ ...nc, lat: e.target.value })} placeholder="21.1702" /></div>
-            <div className="ws-fld"><label>Longitude</label>
-              <input value={nc.lon} onChange={(e) => setNc({ ...nc, lon: e.target.value })} placeholder="72.8311" /></div>
-          </div>
-          <button className="fp-btn primary" style={{ width: '100%', justifyContent: 'center' }}
-                  onClick={saveCamera} disabled={busy}>Save camera</button>
-          <div className="st-hint">GPS enables cross-camera travel-time plausibility checks.</div>
-        </section>
+        {/* Cameras & GPS panel removed - camera siting and coordinates are managed
+            in the Camera Registry, which is the single place that owns them. */}
 
         {/* ---- Data & Storage ---- */}
         <section className="fp-panel">
