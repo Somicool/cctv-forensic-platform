@@ -69,7 +69,7 @@ def create_export(req: ExportRequest) -> ExportResponse:
         "officer": req.officer,
         "notes": req.notes,
         "created_at": created_at,
-        "generated_by": "CCTV Descriptive Search System",
+        "generated_by": "NiriXan AI Forensic Investigation Platform",
         "item_count": len(items),
         "requested_detection_ids": list(req.detection_ids),
         "items": items,
@@ -115,7 +115,8 @@ def _write_pdf(pdf_path, manifest, out_dir) -> None:
     styles = getSampleStyleSheet()
     doc = SimpleDocTemplate(str(pdf_path), pagesize=A4,
                             title=f"Forensic Export {manifest['export_id']}")
-    story = [Paragraph("CCTV Forensic Evidence Export", styles["Title"]), Spacer(1, 6)]
+    story = [Paragraph("NiriXan AI · Forensic Evidence Export", styles["Title"]),
+             Spacer(1, 6)]
     for line in (f"Export ID: {manifest['export_id']}",
                  f"Case number: {manifest['case_number']}",
                  f"Officer: {manifest['officer']}",
