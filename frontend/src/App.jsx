@@ -30,7 +30,7 @@ export default function App() {
       <div className="fp-scrim" onClick={() => setNavOpen(false)} />
       <Sidebar health={health} onNavigate={() => setNavOpen(false)} />
       <div className="fp-main">
-        <TopBar onMenu={() => setNavOpen((v) => !v)} />
+        <TopBar />
         <main className="fp-content">
           {/* keyed by path so each page replays its enter transition */}
           <div key={location.pathname}>

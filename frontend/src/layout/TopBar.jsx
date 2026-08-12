@@ -1,5 +1,4 @@
 import { useLocation } from 'react-router-dom'
-import { IcMenu } from '../components/icons'
 
 const TITLES = {
   '/dashboard': ['Overview', 'Command Dashboard'],
@@ -12,19 +11,17 @@ const TITLES = {
   '/settings': ['System', 'Settings'],
 }
 
-// The global search box and the avatar chip were removed: search belongs to the
-// Investigation Workspace, where it has filters and scope, and a decorative
-// initials chip carried no information. The bar now only breadcrumbs the page and
-// exposes the navigation toggle.
-export default function TopBar({ onMenu }) {
+// The bar only breadcrumbs the current page. The global search box, the avatar
+// chip and the hamburger toggle have all been removed: search belongs to the
+// Investigation Workspace where it has filters and scope, the initials chip
+// carried no information, and the toggle did nothing on a desktop layout where
+// the sidebar is always visible.
+export default function TopBar() {
   const { pathname } = useLocation()
-  const [crumb, title] = TITLES[pathname] || ['', 'VigilSense']
+  const [crumb, title] = TITLES[pathname] || ['', 'NiriXan AI']
 
   return (
     <header className="fp-topbar">
-      <button className="fp-icon-btn" onClick={onMenu} aria-label="Toggle navigation">
-        <IcMenu />
-      </button>
       <div className="fp-crumb">
         <span className="fp-crumb-top">{crumb}</span>
         <span className="fp-crumb-title">{title}</span>
