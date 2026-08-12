@@ -90,7 +90,7 @@ class NullRouteEngine(RouteEngine):
 # ------------------------------------------------------------------ providers
 def _http_json(url: str, timeout: float = 6.0, headers: dict | None = None):
     """Minimal GET returning parsed JSON. stdlib only - routing must not add deps."""
-    req = urllib.request.Request(url, headers=headers or {"User-Agent": "sentinel-journey"})
+    req = urllib.request.Request(url, headers=headers or {"User-Agent": "nirixan-ai-journey"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 

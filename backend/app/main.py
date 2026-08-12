@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="CCTV Descriptive Search API",
+    title="NiriXan AI - Forensic Investigation API",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -71,7 +71,8 @@ def health():
 
 @app.get("/")
 def root():
-    return {"name": "CCTV Descriptive Search API", "docs": "/docs", "health": "/api/health"}
+    return {"name": "NiriXan AI - Forensic Investigation API",
+            "docs": "/docs", "health": "/api/health"}
 
 
 # REST routes (search / track / cameras / audit / ingest).
