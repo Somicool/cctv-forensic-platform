@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getLibrary, getVideos, getCameras, ingestAll, getIngestJob, stopIngest, uploadVideo,
-  deleteVideo, searchText, searchPlate, trackDetection, createExport, logActivity, saveFace,
+  deleteVideo, searchText, searchPlate, createExport, logActivity, saveFace,
   getFaceForDetection, prepareFace, reconstructJourney, listCameraRegistry, saveRegistryCamera,
   reprocessVideos,
 } from '../api'
@@ -81,8 +81,7 @@ export default function Workspace() {
   const [current, setCurrent] = useState(null)
   const [activeId, setActiveId] = useState(null)
   const [playTime, setPlayTime] = useState(0)
-  const [track, setTrack] = useState(null)
-  const [tracing, setTracing] = useState(false)
+
 
   const [showExport, setShowExport] = useState(false)
   const [trackView, setTrackView] = useState(null)     // detection being replayed in the tracking viewer
@@ -192,7 +191,7 @@ export default function Workspace() {
     return { key: v.url, videoId: v.video_id, src: v.url, offset: 0, bbox: null, frameW: null, frameH: null,
              title: v.filename, item: null, sub: [camLabel(v.camera_id), fmtDur(v.duration)].filter(Boolean).join('  ·  ') }
   }
-  function openClip(v) { pickScrollRef.current = true; setScope(v.video_id); setScopeVideo(v); setResults(null); setMeta(null); setTrack(null); setActiveId(null); setPlayTime(0); setCurrent(mediaFromVideo(v)); setPickSeq((n) => n + 1) }
+  function openClip(v) { pickScrollRef.current = true; setScope(v.video_id); setScopeVideo(v); setResults(null); setMeta(null); setActiveId(null); setPlayTime(0); setCurrent(mediaFromVideo(v)); setPickSeq((n) => n + 1) }
   // Progressive: scope the search to the clip that's still being indexed. The
   // early portions are already searchable, so investigators don't have to wait.
   function openPartial() {
@@ -212,7 +211,7 @@ export default function Workspace() {
       title: `${r.class_label}  ·  ${camLabel(r.camera_id)}`,
       sub: [fmtTs(r.timestamp), 'match ' + Math.round((r.score || 0) * 100) + '%', attrText(r.attributes)].filter(Boolean).join('  ·  ') })
     pickScrollRef.current = true
-    setActiveId(r.detection_id); setPlayTime(r.offset_seconds || 0); setTrack(null); setPickSeq((n) => n + 1)
+    setActiveId(r.detection_id); setPlayTime(r.offset_seconds || 0); setPickSeq((n) => n + 1)
     logActivity(activityFromResult(r, 'found'))         // dashboard history: found
   }
   function trackObject(r) { logActivity(activityFromResult(r, 'tracked')); setTrackView(r) }
@@ -260,7 +259,7 @@ export default function Workspace() {
     setError(null)
     if (mode === 'text' && !query.trim()) return
     if (mode === 'plate' && !plate.trim()) return
-    setLoading(true); setTrack(null)
+    setLoading(true)
     const t0 = performance.now()
     // A plate is a global identifier - always search ALL footage so the vehicle
     // is found on any camera, regardless of which clip is currently open.
@@ -284,11 +283,7 @@ export default function Workspace() {
     } catch (e) { setError(e?.response?.data?.detail || e.message || 'Search failed'); setResults([]); setMeta(null) }
     finally { setLoading(false) }
   }
-  async function traceCurrent() {
-    if (!current?.item) return
-    setTracing(true)
-    try { setTrack(await trackDetection(current.item.detection_id)) } catch { setTrack({ appearances: [] }) } finally { setTracing(false) }
-  }
+
 
   // ---- derived status + step ----
   const status = uploading ? ['Uploading', 'var(--fp-warn)']
@@ -427,27 +422,11 @@ export default function Workspace() {
                   <div className="ws-now-title">{cur.title}<span className="ws-time">{fmtDur(playTime)}{cur.item?.offset_seconds != null ? ` / ${fmtDur(cur.item.offset_seconds)}` : ''}</span></div>
                   <div className="ws-now-sub">{cur.sub}</div>
                 </div>
-                {cur.item && (
-                  <div className="ws-now-actions">
-                    <button className={'ws-btn-sm ' + (inEvidence(cur.item.detection_id) ? '' : 'primary')} onClick={() => toggleEvidence(cur.item)}>
-                      {inEvidence(cur.item.detection_id) ? '✓ In evidence' : '＋ Add to evidence'}
-                    </button>
-                    {cur.item.track_id != null && <button className="ws-btn-sm" onClick={() => trackObject(cur.item)} title="Follow this object in the video">⤳ Track object</button>}
-                    {cur.item.class_label === 'person' && <button className="ws-btn-sm" onClick={() => saveFaceFor(cur.item)} title="Save the clearest face to the Face Gallery">☺ Save Face</button>}
-                    {cur.item.class_label === 'person' && <button className="ws-btn-sm" onClick={() => setJourneyFor(cur.item)} title="Reconstruct movement across cameras">⇢ Journey Reconstruction</button>}
-                    {cur.item.attributes?.plate_text && <button className="ws-btn-sm" onClick={() => setRegPlate(cur.item.attributes.plate_text)} title="Demo vehicle registry lookup">ⓘ Vehicle Info</button>}
-                    <button className="ws-btn-sm" onClick={traceCurrent} disabled={tracing}>{tracing ? 'Tracing…' : '⤳ Track across cameras'}</button>
-                  </div>
-                )}
+                {/* The action row that used to sit here (Add to evidence, Track
+                    object, Save Face, Journey Reconstruction, Vehicle Info) was
+                    removed: every one of those actions is on the result card
+                    itself, so the row under the player only repeated them. */}
               </div>
-              {track && (
-                <div className="ws-track">
-                  <div className="ws-track-h">{track.appearances.length} appearance(s) across cameras</div>
-                  {track.appearances.slice(0, 20).map((a, i) => (
-                    <div className="ws-track-row" key={i}><span className="cam">{a.camera_id}</span><span className="mono">{fmtTs(a.timestamp).slice(11)}</span><span className="sim">{Math.round((a.similarity || 0) * 100)}%</span></div>
-                  ))}
-                </div>
-              )}
             </section>
           )}
 
