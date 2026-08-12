@@ -29,13 +29,13 @@ export default function Sidebar({ health, onNavigate }) {
 
   return (
     <aside className="fp-sidebar">
-      {/* VigilSense mark: shield badge + split wordmark. "VIGIL" carries the
-          weight, "SENSE" the accent, with a thin rule underneath so the lockup
-          reads as one logo rather than two stacked lines of text. */}
+      {/* NiriXan AI mark: shield badge + split wordmark. "NIRI" carries the
+          weight, "XAN" the accent, and "AI" sits as a small suffix, with a thin
+          rule underneath so the lockup reads as one logo rather than plain text. */}
       <div className="fp-brand vs-brand">
         <span className="vs-badge"><IcShield /></span>
         <span className="vs-mark">
-          <span className="vs-word"><b>VIGIL</b><i>SENSE</i></span>
+          <span className="vs-word"><b>NIRI</b><i>XAN</i><u>AI</u></span>
           <span className="vs-rule" />
         </span>
       </div>

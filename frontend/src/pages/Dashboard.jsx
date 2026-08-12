@@ -225,7 +225,7 @@ export default function Dashboard() {
         <div className="cd-head-mark">
           <span className="cd-shield"><IcShield /></span>
           <span className="cd-wordmark">
-            <b>VIGILSENSE</b>
+            <b>NIRIXAN AI</b>
             <span>AI Forensic Investigation Platform</span>
           </span>
         </div>
