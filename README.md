@@ -1,4 +1,6 @@
-# AI-Driven Intelligent Descriptive Search for Smart City CCTV
+# NiriXan AI
+
+### AI-Driven Intelligent Descriptive Search for Smart City CCTV
 
 **Hackathon:** ERH26_PS_07 · 4-week prototype
 
