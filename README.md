@@ -300,6 +300,33 @@ set PYTHONUTF8=1
 | `benchmark_identity_fusion.py` | cross-camera identity accuracy and false-match rate |
 | `benchmark_gis_routing.py` | road routing vs straight-line distance |
 
+### Measured on the working dataset
+
+Figures taken from the running system, not estimates.
+
+**Current index**
+
+| | |
+|---|---|
+| Cameras registered | 19 (13 with coordinates) |
+| Clips ingested | 10 · 2.2 GB of footage |
+| Objects indexed | 19,542 detections |
+| Searchable vectors | 21,821 CLIP · 13,364 re-ID · 263 face |
+| Faces detected / plates read | 263 / 92 |
+| Journeys reconstructed | 34 |
+| Sealed cases / evidence reports | 8 / 13 |
+| Metadata database | 47.4 MB |
+
+**Optimisations, before → after**
+
+| Change | Result |
+|---|---|
+| Memoise the best-face decision and warm it when a person is opened | Save Face **18,746 ms → 19 ms**, identical face chosen |
+| Stop the search-result thumbnails decoding a video frame each | ~**17 ms** per thumbnail; the clip no longer waits behind them |
+| Route over located sightings instead of only confirmed nodes | 4 of 5 matched cameras routed; OSRM returned a **10-vertex, 353.9 m** road geometry, verified not a straight line |
+| Read recording time from clip metadata | 21,821 detections re-based; four cameras moved from **25.5 h apart to within 3.6 minutes**, making cross-camera timing usable |
+| Persist the case server-side | Case survives a hard restart with export SHA-256 hashes unchanged |
+
 ---
 
 ## Known limitations
