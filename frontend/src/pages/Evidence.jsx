@@ -29,7 +29,7 @@ function kindsOf(r) {
 }
 
 export default function Evidence() {
-  const { evidence, inEvidence, toggleEvidence, caseInfo } = useInvestigation()
+  const { evidence, inEvidence, toggleEvidence, removeEvidence, caseInfo } = useInvestigation()
 
   const [cats, setCats] = useState(new Set())
   const [camera, setCamera] = useState('')
@@ -62,6 +62,20 @@ export default function Evidence() {
     }
     return m
   }, [reports])
+
+  // Remove one exhibit from the case. Confirmed first because the whole card is a
+  // click target, so a stray click near the corner should not quietly drop
+  // evidence. Only the bookmark goes - the detection, its crop and the source
+  // footage are untouched, so the item can be added again from a search.
+  const deleteOne = useCallback((r) => {
+    const what = [r.class_label, r.camera_id && `on ${r.camera_id}`,
+                  r.timestamp && `at ${fmtTs(r.timestamp)}`].filter(Boolean).join(' ')
+    if (!window.confirm(`Remove this ${what} from the case?\n\n`
+      + 'It stays in the footage and can be added again from a search — only the '
+      + 'case entry is removed.')) return
+    removeEvidence(r.detection_id)
+    setDetail((d) => (d && d.detection_id === r.detection_id ? null : d))
+  }, [removeEvidence])
 
   const buildFor = useCallback(async (r) => {
     setReportError(null); setReportOk(null); setBuilding(r.detection_id)
@@ -174,6 +188,11 @@ export default function Evidence() {
               <div className="ws-rc-thumb">
                 {r.crop_url ? <img src={r.crop_url} alt={r.class_label} loading="lazy" /> : <div className="empty">{r.class_label}</div>}
                 {r.score != null && <span className={'ws-score ' + scoreTier(r.score)}>{Math.round((r.score || 0) * 100)}%</span>}
+                {/* remove this one exhibit; stops the click reaching the card,
+                    which would otherwise open the detail viewer behind it */}
+                <button className="eg-del" title="Remove this item from the case"
+                        aria-label="Remove this item from the case"
+                        onClick={(e) => { e.stopPropagation(); deleteOne(r) }}>×</button>
               </div>
               <div className="ws-rc-body">
                 <div className="ws-rc-top"><span className="lb">{r.class_label}</span><span className="cam">{r.camera_id}</span></div>
@@ -203,6 +222,7 @@ export default function Evidence() {
 
       {detail && <EvidenceViewer item={detail} onClose={() => setDetail(null)}
         inEvidence={inEvidence} toggleEvidence={toggleEvidence}
+        onDelete={() => deleteOne(detail)}
         report={reportFor[detail.detection_id]} building={building === detail.detection_id}
         onBuildReport={() => buildFor(detail)} />}
     </div>
@@ -210,7 +230,7 @@ export default function Evidence() {
 }
 
 /* ---------------------------- detailed evidence viewer ---------------------------- */
-function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence,
+function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence, onDelete,
                          report, building, onBuildReport }) {
   const [track, setTrack] = useState(null)
   const [tracing, setTracing] = useState(false)
@@ -264,6 +284,8 @@ function EvidenceViewer({ item, onClose, inEvidence, toggleEvidence,
               </button>
               {report && <a className="ws-btn-sm" href={report.download_url}
                             target="_blank" rel="noreferrer">⤓ Open PDF</a>}
+              <button className="ws-btn-sm danger" onClick={onDelete}
+                      title="Remove this item from the case">🗑 Remove from case</button>
             </div>
           </div>
         </div>

@@ -475,6 +475,8 @@ body {
 .ws-now-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .ws-btn-sm { padding: 8px 13px; border-radius: 9px; font-size: 12.5px; font-weight: 600; border: 1px solid var(--fp-border-2); background: var(--fp-surface-2); color: var(--fp-text); cursor: pointer; font-family: inherit; }
 .ws-btn-sm.primary { background: var(--fp-accent); border-color: transparent; color: #fff; }
+.ws-btn-sm.danger { border-color: #7a2530; color: #ffb3bb; }
+.ws-btn-sm.danger:hover { border-color: var(--fp-danger); background: rgba(255,91,106,.12); }
 .ws-btn-sm:disabled { opacity: .5; cursor: default; }
 
 .ws-track { margin-top: 14px; border-top: 1px solid var(--fp-border); padding-top: 12px; }
@@ -517,6 +519,22 @@ body {
 .ws-rc-add { position: absolute; top: 9px; left: 9px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: rgba(8,12,20,.85); color: #fff; border: 1px solid var(--fp-border); cursor: pointer; font-size: 16px; line-height: 1; z-index: 2; }
 .ws-rc-add:hover { border-color: var(--fp-accent); color: var(--fp-accent-2); }
 .ws-rc-add.on { background: var(--fp-success); color: #04121a; border-color: var(--fp-success); }
+
+/* Evidence Gallery: remove one exhibit. Sits opposite the score badge, muted until
+   hovered so the grid does not read as a row of delete buttons. */
+.eg-del {
+  position: absolute; top: 9px; left: 9px; width: 28px; height: 28px;
+  border-radius: 50%; display: grid; place-items: center; z-index: 3;
+  background: rgba(8,12,20,.82); color: var(--fp-text-dim);
+  border: 1px solid var(--fp-border); cursor: pointer;
+  font-size: 17px; line-height: 1; opacity: .65;
+  transition: opacity .15s, color .15s, border-color .15s, background .15s;
+}
+.ws-rc:hover .eg-del { opacity: 1; }
+.eg-del:hover {
+  border-color: var(--fp-danger); color: #ffb3bb;
+  background: rgba(255,91,106,.16); opacity: 1;
+}
 .ws-rc-plate { display: inline-block; margin-top: 10px; font-family: ui-monospace, monospace; font-size: 15px; font-weight: 800; letter-spacing: 1.2px; color: #10151f; background: #f2c14e; border: 1px solid #c99a26; border-radius: 6px; padding: 4px 12px; box-shadow: 0 1px 0 rgba(0,0,0,.25); }
 .ws-rc-foot { display: flex; gap: 8px; padding: 0 15px 15px; margin-top: 12px; }
 .ws-rc-act { flex: 1; padding: 9px 10px; border-radius: 9px; font-size: 12.5px; font-weight: 600; cursor: pointer;
