@@ -15,6 +15,14 @@ Built to **generalise to unfamiliar footage** the system has never seen.
 
 ---
 
+## System architecture
+
+<p align="center">
+  <img src="mermaid-diagram.png" alt="NiriXan AI system architecture: ingestion pipeline, vector and metadata stores, search and investigation services, and the React command centre" width="100%">
+</p>
+
+---
+
 ## What it does
 
 - **Descriptive text search** – natural-language queries over ingested video (CLIP semantic retrieval).
