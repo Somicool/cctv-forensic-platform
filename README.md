@@ -24,16 +24,81 @@ Reconstruct the route they took. Hand over a sealed evidence report.*
 
 ---
 
-An investigator rarely starts with a face or a number plate. They start with a
-description — *"a man in a white shirt carrying a backpack"* — and hundreds of hours
-of footage. NiriXan AI turns that description into an investigation: it searches
-footage semantically, follows one person from camera to camera, draws the real road
-route between the sightings, and produces a court-ready report with a SHA-256 chain
-of custody.
+## About the project
 
-It is built to **generalise to unfamiliar footage** the system has never seen, and it
-runs **entirely on a local machine** — a 6 GB laptop GPU is enough. No cloud
-inference for detection, search or re-identification.
+### The problem
+
+A city runs thousands of cameras. When something happens, an investigator is handed
+two things: hundreds of hours of footage, and a **description** — *"a man in a white
+shirt carrying a backpack, somewhere near the market, sometime after eight."*
+
+Not a face. Not a number plate. Not a name. Just a description.
+
+Today that means officers watching footage in shifts, scrubbing timelines by hand,
+and hoping someone notices the right frame. A suspect who walks past six cameras is
+six separate manual searches, and stitching those sightings into a route is done on
+paper. The evidence that comes out the other end is a folder of screenshots with no
+guarantee it hasn't been altered.
+
+Conventional video management systems don't help, because they can only search what
+somebody already typed in — camera name, date, maybe a manual tag. They cannot search
+*what the footage looks like*.
+
+### The approach
+
+NiriXan AI makes footage searchable by description, then turns a search result into a
+complete investigation.
+
+Every clip is analysed **once**, at ingest: objects are detected and tracked, each
+person and vehicle is embedded into a vector that captures how it *looks*, faces and
+number plates are read where they're legible, and every detection is written to a
+database alongside its real-world timestamp, camera and bounding box. Search then
+works on meaning rather than keywords — a plain-language query is embedded into the
+same space and matched against the footage, so *"a person wearing a helmet"* finds
+people wearing helmets in video nobody has ever labelled.
+
+From a single result, an investigator can:
+
+1. **Jump to the exact frame** in the source recording, with the subject outlined.
+2. **Follow that person through the clip**, verified frame by frame against a
+   multi-view reference of them rather than the one frame that was clicked.
+3. **Find the same person in other cameras**, scored on face, body, clothing and
+   accessory evidence combined with where and when the sighting happened.
+4. **See the route they took** — the actual road path between the cameras, from
+   OpenStreetMap routing, in the order the sightings occurred.
+5. **Seal the evidence** into a report and an export whose every file is
+   SHA-256 hashed, so tampering is detectable.
+
+### What makes it different
+
+Most of the engineering effort went somewhere unglamorous: **making the system honest
+about what it does not know.** In an investigation, a confidently wrong
+identification is far more damaging than an admission of uncertainty.
+
+- Cross-camera matches are labelled **confirmed, probable, possible** or **weak**, and
+  the underlying score is always shown next to the label.
+- When two people in one camera score within a few percent of each other, that camera
+  is marked **ambiguous** and the system refuses to name either as the journey. It
+  hands the choice back to the officer.
+- The map **never draws a straight line** between two cameras and calls it a route. If
+  road routing is unavailable, it says so, because a straight line through buildings
+  asserts a path the evidence does not support.
+- Timestamps come from each clip's **own metadata**, not from when the file happened to
+  be uploaded — otherwise every cross-camera timing conclusion is meaningless.
+- AI-written passages in reports are labelled machine-generated and requiring officer
+  verification, and the prompts forbid identifying anyone or asserting that an offence
+  occurred.
+
+### Built to run anywhere
+
+The whole pipeline is **local**. Detection, tracking, semantic search,
+re-identification, face recognition and plate OCR all run on the machine in front of
+you — a 6 GB laptop GPU is enough, and it degrades to CPU. Nothing about the footage
+leaves the building for the core capabilities. Road routing and the optional report
+narration are the only network calls, and both fail gracefully and say so.
+
+It is also designed to **generalise to unfamiliar footage** the system has never seen:
+no per-camera training, no per-city fine-tuning, no manual tagging step.
 
 > **Try:** *"a white truck"* · *"a red hatchback near Diamond Market"* ·
 > *"a person wearing a backpack"* · Hindi *"सफ़ेद ट्रक"*
@@ -52,6 +117,8 @@ inference for detection, search or re-identification.
 
 ## Contents
 
+- [About the project](#about-the-project)
+- [System architecture](#system-architecture)
 - [Capabilities](#capabilities)
 - [How an investigation flows](#how-an-investigation-flows)
 - [Model stack](#model-stack)
